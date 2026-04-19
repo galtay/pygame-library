@@ -24,7 +24,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pygame-claude"
+name = "pygame-library"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
