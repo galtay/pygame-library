@@ -16,3 +16,6 @@ venv/
 # Editors
 .vscode/
 .idea/
+
+# pygbag build artifacts
+build/

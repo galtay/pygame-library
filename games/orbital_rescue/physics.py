@@ -1,13 +1,12 @@
 """Orbital mechanics primitives — pure functions, no pygame dependency.
 
-Units are whatever the caller chooses; typical use is pixels for distance
-and frames for time. `MU = G * M_planet` is tuned (see `main.py`) to give
-visually pleasant orbit periods at 60 fps.
+Units are SI-ish: pixels for distance, seconds for time. `MU = G * M_planet`
+is tuned to give visually pleasant orbit periods at the game's scale.
 """
 
 import math
 
-MU = 1000.0
+MU = 3_600_000.0
 
 
 def gravity_accel(
@@ -29,11 +28,12 @@ def step(
     vel: tuple[float, float],
     planet: tuple[float, float],
     dt: float,
+    thrust: tuple[float, float] = (0.0, 0.0),
 ) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Semi-implicit Euler step under gravity from a single point mass."""
+    """Semi-implicit Euler step under gravity plus optional thrust accel."""
     ax, ay = gravity_accel(pos, planet)
-    vx = vel[0] + ax * dt
-    vy = vel[1] + ay * dt
+    vx = vel[0] + (ax + thrust[0]) * dt
+    vy = vel[1] + (ay + thrust[1]) * dt
     px = pos[0] + vx * dt
     py = pos[1] + vy * dt
     return (px, py), (vx, vy)
