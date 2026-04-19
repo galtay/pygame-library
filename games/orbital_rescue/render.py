@@ -8,32 +8,7 @@ from typing import Iterable
 
 import pygame
 
-from constants import (
-    BG,
-    FLAME,
-    HALO,
-    HUD_ACTION,
-    ORBIT_GUIDE,
-    RESCUE,
-    RESCUE_ORBIT_RADIUS,
-    RESCUE_SIZE,
-    STRANDED_FACING,
-    STAR_CORE,
-    STAR_CORONA,
-    STAR_CORONA_RADIUS,
-    STAR_GLOW,
-    STAR_GLOW_RADIUS,
-    STAR_OUTER,
-    STAR_OUTER_RADIUS,
-    STAR_POS,
-    STAR_RADIUS,
-    STRANDED,
-    STRANDED_ORBIT_RADIUS,
-    STRANDED_SIZE,
-    TRAIL,
-    TUG,
-    TUG_SIZE,
-)
+import constants
 
 
 def draw_triangle(
@@ -58,22 +33,22 @@ def draw_triangle(
 
 
 def draw_background(surf: pygame.Surface, dim_star: bool = False) -> None:
-    surf.fill(BG)
-    pygame.draw.circle(surf, ORBIT_GUIDE, STAR_POS, STRANDED_ORBIT_RADIUS, 1)
-    pygame.draw.circle(surf, ORBIT_GUIDE, STAR_POS, RESCUE_ORBIT_RADIUS, 1)
+    surf.fill(constants.BG)
+    pygame.draw.circle(surf, constants.ORBIT_GUIDE, constants.STAR_POS, constants.STRANDED_ORBIT_RADIUS, 1)
+    pygame.draw.circle(surf, constants.ORBIT_GUIDE, constants.STAR_POS, constants.RESCUE_ORBIT_RADIUS, 1)
     # Star: concentric opaque circles from dim outer glow to hot core.
     # `dim_star` drops each layer to ~33% brightness so mission briefing text
     # stays legible over the star.
     k = 0.33 if dim_star else 1.0
     layers = (
-        (STAR_OUTER, STAR_OUTER_RADIUS),
-        (STAR_GLOW, STAR_GLOW_RADIUS),
-        (STAR_CORONA, STAR_CORONA_RADIUS),
-        (STAR_CORE, STAR_RADIUS),
+        (constants.STAR_OUTER, constants.STAR_OUTER_RADIUS),
+        (constants.STAR_GLOW, constants.STAR_GLOW_RADIUS),
+        (constants.STAR_CORONA, constants.STAR_CORONA_RADIUS),
+        (constants.STAR_CORE, constants.STAR_RADIUS),
     )
     for color, radius in layers:
         dim = (int(color[0] * k), int(color[1] * k), int(color[2] * k))
-        pygame.draw.circle(surf, dim, STAR_POS, radius)
+        pygame.draw.circle(surf, dim, constants.STAR_POS, radius)
 
 
 def draw_trail(surf: pygame.Surface, trail: Iterable[tuple[float, float]]) -> None:
@@ -81,8 +56,8 @@ def draw_trail(surf: pygame.Surface, trail: Iterable[tuple[float, float]]) -> No
     n = len(points)
     if n < 2:
         return
-    bg_r, bg_g, bg_b = BG
-    tr_r, tr_g, tr_b = TRAIL
+    bg_r, bg_g, bg_b = constants.BG
+    tr_r, tr_g, tr_b = constants.TRAIL
     dr, dg, db = tr_r - bg_r, tr_g - bg_g, tr_b - bg_b
     denom = n - 1
     for i in range(denom):
@@ -96,15 +71,15 @@ def draw_trail(surf: pygame.Surface, trail: Iterable[tuple[float, float]]) -> No
 
 
 def draw_rescue_ship(surf: pygame.Surface, pos: tuple[float, float]) -> None:
-    dx = STAR_POS[0] - pos[0]
-    dy = STAR_POS[1] - pos[1]
+    dx = constants.STAR_POS[0] - pos[0]
+    dy = constants.STAR_POS[1] - pos[1]
     d = math.hypot(dx, dy)
     if d == 0.0:
         return
     ux, uy = dx / d, dy / d
     px, py = -uy, ux
     facing_out = math.atan2(uy, ux) + math.pi
-    draw_triangle(surf, RESCUE, pos, facing_out, RESCUE_SIZE)
+    draw_triangle(surf, constants.RESCUE, pos, facing_out, constants.RESCUE_SIZE)
     for offset in (-5, 5):
         base = (
             pos[0] + ux * 10 + px * offset,
@@ -112,15 +87,15 @@ def draw_rescue_ship(surf: pygame.Surface, pos: tuple[float, float]) -> None:
         )
         flame_len = 14 + random.uniform(-2, 4)
         tip = (base[0] + ux * flame_len, base[1] + uy * flame_len)
-        pygame.draw.line(surf, FLAME, base, tip, 2)
+        pygame.draw.line(surf, constants.FLAME, base, tip, 2)
 
 
 def draw_stranded(
     surf: pygame.Surface,
     pos: tuple[float, float],
-    facing: float = STRANDED_FACING,
+    facing: float = constants.STRANDED_FACING,
 ) -> None:
-    draw_triangle(surf, STRANDED, pos, facing, STRANDED_SIZE)
+    draw_triangle(surf, constants.STRANDED, pos, facing, constants.STRANDED_SIZE)
 
 
 CARGO_TUG_OFFSET = 12.0
@@ -146,20 +121,20 @@ def draw_tug(
     cargo: bool,
 ) -> None:
     if cargo:
-        draw_triangle(surf, STRANDED, pos, facing, STRANDED_SIZE)
+        draw_triangle(surf, constants.STRANDED, pos, facing, constants.STRANDED_SIZE)
     tug_pos = tug_visual_center(pos, facing, cargo)
-    draw_triangle(surf, TUG, tug_pos, facing, TUG_SIZE)
+    draw_triangle(surf, constants.TUG, tug_pos, facing, constants.TUG_SIZE)
     if thrusting:
         back = facing + math.pi
         base = (tug_pos[0] + math.cos(back) * 8, tug_pos[1] + math.sin(back) * 8)
         tip = (tug_pos[0] + math.cos(back) * 20, tug_pos[1] + math.sin(back) * 20)
-        pygame.draw.line(surf, FLAME, base, tip, 2)
+        pygame.draw.line(surf, constants.FLAME, base, tip, 2)
 
 
 def draw_capture_halo(
     surf: pygame.Surface, pos: tuple[float, float], radius: float
 ) -> None:
-    pygame.draw.circle(surf, HALO, (int(pos[0]), int(pos[1])), int(radius), 1)
+    pygame.draw.circle(surf, constants.HALO, (int(pos[0]), int(pos[1])), int(radius), 1)
 
 
 def render_key_line(
@@ -191,7 +166,7 @@ def draw_briefing_modal(
     """Centered mission briefing: title, segmented body lines, and a key-highlighted prompt."""
     screen_w, screen_h = surf.get_size()
 
-    title_surf = title_font.render(title, True, HUD_ACTION)
+    title_surf = title_font.render(title, True, constants.HUD_ACTION)
     body_surfs = [render_key_line(body_font, line) for line in body_lines]
     prompt_surf = render_key_line(body_font, prompt_segments)
 

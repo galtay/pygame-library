@@ -29,35 +29,7 @@ from pathlib import Path
 
 import pygame
 
-from constants import (
-    ARRIVAL_DURATION,
-    ARRIVAL_START_RADIUS,
-    CAPTURE_CYCLE,
-    CAPTURE_RADII,
-    DOCK_ALIGN_DURATION,
-    DOCK_RADIUS,
-    DT_SIM,
-    FPS,
-    HUD,
-    HUD_ACTION,
-    HUD_BAD,
-    HUD_OK,
-    MAX_FRAME_DT,
-    MAX_PILOT_SECONDS,
-    MAX_TRAIL_POINTS,
-    RESCUE,
-    RESCUE_ORBIT_RADIUS,
-    RESCUE_POS,
-    STAR_POS,
-    STAR_RADIUS,
-    STRANDED,
-    STRANDED_FACING,
-    STRANDED_ORBIT_RADIUS,
-    TUG,
-    TUG_ROT_SPEED,
-    TUG_THRUST,
-    WINDOW_SIZE,
-)
+import constants
 from physics import (
     circular_orbit_angular_speed,
     circular_orbit_position,
@@ -73,6 +45,7 @@ class State(Enum):
     OUTBOUND = auto()
     DOCKED = auto()
     HOMEBOUND = auto()
+    RETURNING = auto()
     WON = auto()
     FAILED = auto()
 
@@ -87,9 +60,9 @@ class InputFrame:
 def off_screen(pos: tuple[float, float], margin: float = 400.0) -> bool:
     return (
         pos[0] < -margin
-        or pos[0] > WINDOW_SIZE[0] + margin
+        or pos[0] > constants.WINDOW_SIZE[0] + margin
         or pos[1] < -margin
-        or pos[1] > WINDOW_SIZE[1] + margin
+        or pos[1] > constants.WINDOW_SIZE[1] + margin
     )
 
 
@@ -99,9 +72,9 @@ def tug_launch_orbit() -> tuple[tuple[float, float], tuple[float, float], float]
     Facing matches the orientation the tug had while nested inside the rescue
     ship — pointing outward from the star — so launching produces no snap.
     """
-    pos = (float(RESCUE_POS[0]), float(RESCUE_POS[1]))
-    vel = circular_orbit_velocity(RESCUE_ORBIT_RADIUS, 0.0)
-    facing = math.atan2(RESCUE_POS[1] - STAR_POS[1], RESCUE_POS[0] - STAR_POS[0])
+    pos = (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1]))
+    vel = circular_orbit_velocity(constants.RESCUE_ORBIT_RADIUS, 0.0)
+    facing = math.atan2(constants.RESCUE_POS[1] - constants.STAR_POS[1], constants.RESCUE_POS[0] - constants.STAR_POS[0])
     return pos, vel, facing
 
 
@@ -111,39 +84,57 @@ def random_stranded_angle() -> float:
 
 BRIEFING_TITLE = "MISSION BRIEFING"
 BRIEFING_LINES: list[list[tuple[str, tuple[int, int, int]]]] = [
-    [("A ", HUD), ("stranded", STRANDED), (" vessel drifts in low orbit around", HUD)],
-    [("a hostile star, taking radiation damage every", HUD)],
-    [("second it remains.", HUD)],
+    [("A ", constants.HUD), ("stranded", constants.STRANDED), (" vessel drifts in low orbit around", constants.HUD)],
+    [("a hostile star, taking radiation damage every", constants.HUD)],
+    [("second it remains.", constants.HUD)],
     [],
-    [("Your ", HUD), ("rescue", RESCUE), (" ship holds a safer orbit above.", HUD)],
-    [("Launch the hardened ", HUD), ("tug", TUG), (" down to the ", HUD), ("stranded", STRANDED)],
-    [("ship, dock, and haul it back to safety.", HUD)],
+    [("Your ", constants.HUD), ("rescue", constants.RESCUE), (" ship holds a safer orbit above.", constants.HUD)],
+    [("Launch the hardened ", constants.HUD), ("tug", constants.TUG), (" down to the ", constants.HUD), ("stranded", constants.STRANDED)],
+    [("ship, dock, and haul it back to safety.", constants.HUD)],
 ]
 
 PILOTING_CONTROLS: list[list[tuple[str, tuple[int, int, int]]]] = [
-    [("[LEFT/RIGHT]", HUD_ACTION), (" rotate", HUD)],
-    [("[UP]", HUD_ACTION), (" thrust", HUD)],
+    [("[LEFT/RIGHT]", constants.HUD_ACTION), (" rotate", constants.HUD)],
+    [("[UP]", constants.HUD_ACTION), (" thrust", constants.HUD)],
 ]
 SESSION_CONTROLS: list[list[tuple[str, tuple[int, int, int]]]] = [
-    [("[R]", HUD_ACTION), (" reset", HUD)],
-    [("[ESC]", HUD_ACTION), (" quit", HUD)],
+    [("[R]", constants.HUD_ACTION), (" reset", constants.HUD)],
+    [("[ESC]", constants.HUD_ACTION), (" quit", constants.HUD)],
 ]
 
 
 def rescue_ship_position(arrival_progress: float) -> tuple[float, float]:
-    """Rescue ship's current spot: radial descent from ARRIVAL_START_RADIUS to RESCUE_POS with smoothstep easing."""
+    """Rescue ship's current spot: radial descent from the start radius to the station position with smoothstep easing."""
     if arrival_progress >= 1.0:
-        return (float(RESCUE_POS[0]), float(RESCUE_POS[1]))
+        return (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1]))
     t = max(0.0, arrival_progress)
     s = t * t * (3 - 2 * t)
-    radius = ARRIVAL_START_RADIUS + (RESCUE_ORBIT_RADIUS - ARRIVAL_START_RADIUS) * s
-    return (float(STAR_POS[0] + radius), float(STAR_POS[1]))
+    radius = constants.ARRIVAL_START_RADIUS + (constants.RESCUE_ORBIT_RADIUS - constants.ARRIVAL_START_RADIUS) * s
+    return (float(constants.STAR_POS[0] + radius), float(constants.STAR_POS[1]))
 
 
 def _lerp_angle(a: float, b: float, t: float) -> float:
     """Shortest-arc angle interpolation from `a` to `b` by fraction `t`."""
     diff = (b - a + math.pi) % (2 * math.pi) - math.pi
     return a + diff * t
+
+
+def _closing_rate(
+    tug_pos: tuple[float, float],
+    tug_vel: tuple[float, float],
+    target_pos: tuple[float, float],
+    target_vel: tuple[float, float],
+) -> float:
+    """Rate at which the distance between tug and target is shrinking.
+    Positive = closing, negative = receding."""
+    px = target_pos[0] - tug_pos[0]
+    py = target_pos[1] - tug_pos[1]
+    d = math.hypot(px, py)
+    if d == 0.0:
+        return 0.0
+    vrx = target_vel[0] - tug_vel[0]
+    vry = target_vel[1] - tug_vel[1]
+    return -(px * vrx + py * vry) / d
 
 
 @dataclass
@@ -161,6 +152,11 @@ class GameState:
     dock_tug_start_facing: float
     dock_tug_capture_radius: float
     dock_tug_capture_angle: float
+    dock_tug_start_pos: tuple[float, float]
+    dock_stranded_start_pos: tuple[float, float]
+    dv_stranded_at_lock: float
+    dv_rescue_at_lock: float
+    dv_rescue_locked: bool
     has_cargo: bool
     status: str
 
@@ -178,17 +174,22 @@ class GameState:
             tug_pos=pos,
             tug_vel=(0.0, 0.0),
             tug_angle=facing,
-            tug_trail=deque(maxlen=MAX_TRAIL_POINTS),
+            tug_trail=deque(maxlen=constants.MAX_TRAIL_POINTS),
             pilot_age=0.0,
             stranded_angle=stranded_angle,
             stranded_pos=circular_orbit_position(
-                STAR_POS, STRANDED_ORBIT_RADIUS, stranded_angle
+                constants.STAR_POS, constants.STRANDED_ORBIT_RADIUS, stranded_angle
             ),
             arrival_progress=0.0 if with_arrival else 1.0,
             dock_align_elapsed=0.0,
             dock_tug_start_facing=0.0,
             dock_tug_capture_radius=0.0,
             dock_tug_capture_angle=0.0,
+            dock_tug_start_pos=(0.0, 0.0),
+            dock_stranded_start_pos=(0.0, 0.0),
+            dv_stranded_at_lock=0.0,
+            dv_rescue_at_lock=0.0,
+            dv_rescue_locked=False,
             has_cargo=False,
             status=(
                 "Rescue ship arriving..." if with_arrival
@@ -213,11 +214,11 @@ class GameState:
         self.status = "Pilot the tug to the stranded ship."
 
     def engage_homebound(self) -> None:
-        vel = circular_orbit_velocity(STRANDED_ORBIT_RADIUS, self.stranded_angle)
+        vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, self.stranded_angle)
         self.tug_pos = self.stranded_pos
         self.tug_vel = vel
         # Preserve the post-alignment orientation so HOMEBOUND starts with no snap.
-        self.tug_angle = STRANDED_FACING
+        self.tug_angle = constants.STRANDED_FACING
         self.tug_trail.clear()
         self.tug_trail.append(self.tug_pos)
         self.pilot_age = 0.0
@@ -238,7 +239,7 @@ def simulate(
 
     if gs.state is State.ARRIVING:
         _advance_stranded(gs, dt, stranded_omega)
-        gs.arrival_progress += dt / ARRIVAL_DURATION
+        gs.arrival_progress += dt / constants.ARRIVAL_DURATION
         if gs.arrival_progress >= 1.0:
             gs.finish_arrival()
         return
@@ -249,20 +250,30 @@ def simulate(
     if gs.state is State.DOCKED:
         gs.dock_align_elapsed += dt
 
+    if gs.state is State.RETURNING:
+        gs.dock_align_elapsed += dt
+        if gs.dock_align_elapsed >= constants.DOCK_ALIGN_DURATION:
+            gs.tug_pos = (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1]))
+            gs.stranded_pos = gs.tug_pos
+            gs.tug_angle = 0.0
+            gs.state = State.WON
+            gs.status = "Rescue complete!"
+        return
+
     if gs.state not in (State.OUTBOUND, State.HOMEBOUND):
         return
 
     if inp.left:
-        gs.tug_angle -= TUG_ROT_SPEED * dt
+        gs.tug_angle -= constants.TUG_ROT_SPEED * dt
     if inp.right:
-        gs.tug_angle += TUG_ROT_SPEED * dt
+        gs.tug_angle += constants.TUG_ROT_SPEED * dt
 
     thrust = (
-        (math.cos(gs.tug_angle) * TUG_THRUST, math.sin(gs.tug_angle) * TUG_THRUST)
+        (math.cos(gs.tug_angle) * constants.TUG_THRUST, math.sin(gs.tug_angle) * constants.TUG_THRUST)
         if inp.thrust
         else (0.0, 0.0)
     )
-    gs.tug_pos, gs.tug_vel = step(gs.tug_pos, gs.tug_vel, STAR_POS, dt, thrust)
+    gs.tug_pos, gs.tug_vel = step(gs.tug_pos, gs.tug_vel, constants.STAR_POS, dt, thrust)
     gs.tug_trail.append(gs.tug_pos)
     gs.pilot_age += dt
 
@@ -271,9 +282,9 @@ def simulate(
 
     outbound = gs.state is State.OUTBOUND
 
-    pdx = gs.tug_pos[0] - STAR_POS[0]
-    pdy = gs.tug_pos[1] - STAR_POS[1]
-    if pdx * pdx + pdy * pdy <= STAR_RADIUS * STAR_RADIUS:
+    pdx = gs.tug_pos[0] - constants.STAR_POS[0]
+    pdy = gs.tug_pos[1] - constants.STAR_POS[1]
+    if pdx * pdx + pdy * pdy <= constants.STAR_RADIUS * constants.STAR_RADIUS:
         gs.status = (
             "Crashed the tug into the star. (R to reset)"
             if outbound
@@ -286,27 +297,42 @@ def simulate(
         dx = gs.tug_pos[0] - gs.stranded_pos[0]
         dy = gs.tug_pos[1] - gs.stranded_pos[1]
         if dx * dx + dy * dy <= capture_radius * capture_radius:
+            stranded_vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
+            gs.dv_stranded_at_lock = _closing_rate(
+                gs.tug_pos, gs.tug_vel, gs.stranded_pos, stranded_vel
+            )
             gs.state = State.DOCKED
             gs.status = "Docked!"
             gs.dock_align_elapsed = 0.0
             gs.dock_tug_start_facing = gs.tug_angle
-            tug_dx = gs.tug_pos[0] - STAR_POS[0]
-            tug_dy = gs.tug_pos[1] - STAR_POS[1]
+            tug_dx = gs.tug_pos[0] - constants.STAR_POS[0]
+            tug_dy = gs.tug_pos[1] - constants.STAR_POS[1]
             gs.dock_tug_capture_radius = math.hypot(tug_dx, tug_dy)
             gs.dock_tug_capture_angle = math.atan2(tug_dy, tug_dx)
             gs.has_cargo = True
             return
     else:
-        rdx = gs.tug_pos[0] - RESCUE_POS[0]
-        rdy = gs.tug_pos[1] - RESCUE_POS[1]
-        if rdx * rdx + rdy * rdy <= DOCK_RADIUS * DOCK_RADIUS:
-            gs.tug_pos = (float(RESCUE_POS[0]), float(RESCUE_POS[1]))
-            gs.stranded_pos = gs.tug_pos
-            gs.state = State.WON
-            gs.status = "Rescue complete!"
+        rdx = gs.tug_pos[0] - constants.RESCUE_POS[0]
+        rdy = gs.tug_pos[1] - constants.RESCUE_POS[1]
+        if rdx * rdx + rdy * rdy <= capture_radius * capture_radius:
+            gs.dv_rescue_at_lock = _closing_rate(
+                gs.tug_pos,
+                gs.tug_vel,
+                (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1])),
+                (0.0, 0.0),
+            )
+            gs.dv_rescue_locked = True
+            gs.state = State.RETURNING
+            gs.status = "Returning to rescue ship..."
+            gs.dock_align_elapsed = 0.0
+            gs.dock_tug_start_facing = gs.tug_angle
+            gs.dock_stranded_start_pos = gs.stranded_pos
+            gs.dock_tug_start_pos = render.tug_visual_center(
+                gs.tug_pos, gs.tug_angle, cargo=True
+            )
             return
 
-    if off_screen(gs.tug_pos) or gs.pilot_age >= MAX_PILOT_SECONDS:
+    if off_screen(gs.tug_pos) or gs.pilot_age >= constants.MAX_PILOT_SECONDS:
         gs.status = (
             "Tug lost in space. (R to reset)"
             if outbound
@@ -318,7 +344,7 @@ def simulate(
 def _advance_stranded(gs: GameState, dt: float, omega: float) -> None:
     gs.stranded_angle = (gs.stranded_angle + omega * dt) % (2 * math.pi)
     gs.stranded_pos = circular_orbit_position(
-        STAR_POS, STRANDED_ORBIT_RADIUS, gs.stranded_angle
+        constants.STAR_POS, constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle
     )
 
 
@@ -326,8 +352,8 @@ def _settings_lines(
     capture_setting: str, stellar_damage: bool
 ) -> list[list[tuple[str, tuple[int, int, int]]]]:
     return [
-        [("[c]", HUD_ACTION), (f"apture radius: {capture_setting}", HUD)],
-        [("[d]", HUD_ACTION), (f"amage: {'on' if stellar_damage else 'off'}", HUD)],
+        [("[c]", constants.HUD_ACTION), (f"apture radius: {capture_setting}", constants.HUD)],
+        [("[d]", constants.HUD_ACTION), (f"amage: {'on' if stellar_damage else 'off'}", constants.HUD)],
     ]
 
 
@@ -337,20 +363,20 @@ def _center_content(
     if briefing_visible:
         return []
     if gs.state is State.ARRIVING:
-        return [[("[SPACE]", HUD_ACTION), (" skip intro", HUD)]]
+        return [[("[SPACE]", constants.HUD_ACTION), (" skip intro", constants.HUD)]]
     if gs.state is State.PARKED:
-        return [[("[SPACE]", HUD_ACTION), (" launch tug", HUD)]]
+        return [[("[SPACE]", constants.HUD_ACTION), (" launch tug", constants.HUD)]]
     if gs.state is State.DOCKED:
-        lines = [[("docked with ", HUD), ("stranded", STRANDED), (" vessel", HUD)]]
-        if gs.dock_align_elapsed >= DOCK_ALIGN_DURATION:
+        lines = [[("docked with ", constants.HUD), ("stranded", constants.STRANDED), (" vessel", constants.HUD)]]
+        if gs.dock_align_elapsed >= constants.DOCK_ALIGN_DURATION:
             lines.append(
-                [("[SPACE]", HUD_ACTION), (" to begin return journey", HUD)]
+                [("[SPACE]", constants.HUD_ACTION), (" to begin return journey", constants.HUD)]
             )
         return lines
     color = (
-        HUD_OK if gs.state is State.WON
-        else HUD_BAD if gs.state is State.FAILED
-        else HUD
+        constants.HUD_OK if gs.state is State.WON
+        else constants.HUD_BAD if gs.state is State.FAILED
+        else constants.HUD
     )
     return [[(gs.status, color)]]
 
@@ -368,9 +394,34 @@ def _draw_hud(
     line_h = font.get_height() + 4
     y_bot = h - pad - font.get_height()
 
-    # TOP-LEFT: distance from star
-    r = int(math.hypot(gs.tug_pos[0] - STAR_POS[0], gs.tug_pos[1] - STAR_POS[1]))
-    screen.blit(font.render(f"R: {r} px", True, HUD), (pad, pad))
+    # TOP-LEFT: relative velocities to each ship. Live values render in
+    # neutral gray; once locked at capture they freeze in action-yellow.
+    top_left_lines: list[list[tuple[str, tuple[int, int, int]]]] = []
+    if gs.has_cargo:
+        dv_s, dv_s_color = gs.dv_stranded_at_lock, constants.HUD_ACTION
+    else:
+        sv = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
+        dv_s = _closing_rate(gs.tug_pos, gs.tug_vel, gs.stranded_pos, sv)
+        dv_s_color = constants.HUD
+    top_left_lines.append(
+        [("delta-v ", constants.HUD), ("stranded", constants.STRANDED), (f": {dv_s:+6.1f} px/s", dv_s_color)]
+    )
+    if gs.dv_rescue_locked:
+        dv_r, dv_r_color = gs.dv_rescue_at_lock, constants.HUD_ACTION
+    else:
+        dv_r = _closing_rate(
+            gs.tug_pos,
+            gs.tug_vel,
+            (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1])),
+            (0.0, 0.0),
+        )
+        dv_r_color = constants.HUD
+    top_left_lines.append(
+        [("delta-v ", constants.HUD), ("rescue", constants.RESCUE), (f": {dv_r:+6.1f} px/s", dv_r_color)]
+    )
+    for i, segs in enumerate(top_left_lines):
+        s = render.render_key_line(font, segs)
+        screen.blit(s, (pad, pad + i * line_h))
 
     # TOP-RIGHT: difficulty settings (key + display combined)
     for i, segs in enumerate(_settings_lines(capture_setting, stellar_damage)):
@@ -412,16 +463,18 @@ def draw(
     rescue_pos = rescue_ship_position(gs.arrival_progress)
     render.draw_rescue_ship(screen, rescue_pos)
 
-    # Stranded vessel is always drawn in place with its fixed orientation —
-    # it never rotates; the tug is the rotating one after docking.
-    render.draw_stranded(screen, gs.stranded_pos)
+    # Stranded ship: position and facing depend on state. Default = its own
+    # spot with the fixed disabled orientation. RETURNING lerps both into the
+    # rescue position and rescue facing so the three ships overlap on landing.
+    stranded_draw_pos: tuple[float, float] = gs.stranded_pos
+    stranded_facing = constants.STRANDED_FACING
 
     # Tug position/facing/thrust depend on state.
     show_halo = True
     if gs.state in (State.ARRIVING, State.PARKED):
         # Nested inside the rescue ship, facing outward from the star.
-        dx = STAR_POS[0] - rescue_pos[0]
-        dy = STAR_POS[1] - rescue_pos[1]
+        dx = constants.STAR_POS[0] - rescue_pos[0]
+        dy = constants.STAR_POS[1] - rescue_pos[1]
         tug_facing = math.atan2(dy, dx) + math.pi
         tug_visual_pos = rescue_pos
         tug_thrust = False
@@ -433,13 +486,13 @@ def draw(
         omega = circular_orbit_angular_speed(gs.dock_tug_capture_radius)
         tug_orbit_angle = gs.dock_tug_capture_angle + omega * elapsed
         tug_orbit_pos = (
-            STAR_POS[0] + gs.dock_tug_capture_radius * math.cos(tug_orbit_angle),
-            STAR_POS[1] + gs.dock_tug_capture_radius * math.sin(tug_orbit_angle),
+            constants.STAR_POS[0] + gs.dock_tug_capture_radius * math.cos(tug_orbit_angle),
+            constants.STAR_POS[1] + gs.dock_tug_capture_radius * math.sin(tug_orbit_angle),
         )
-        target_pos = render.tug_visual_center(gs.stranded_pos, STRANDED_FACING, cargo=True)
-        t_raw = min(1.0, elapsed / DOCK_ALIGN_DURATION)
+        target_pos = render.tug_visual_center(gs.stranded_pos, constants.STRANDED_FACING, cargo=True)
+        t_raw = min(1.0, elapsed / constants.DOCK_ALIGN_DURATION)
         t = t_raw * t_raw * (3 - 2 * t_raw)
-        tug_facing = _lerp_angle(gs.dock_tug_start_facing, STRANDED_FACING, t)
+        tug_facing = _lerp_angle(gs.dock_tug_start_facing, constants.STRANDED_FACING, t)
         tug_visual_pos = (
             tug_orbit_pos[0] * (1 - t) + target_pos[0] * t,
             tug_orbit_pos[1] * (1 - t) + target_pos[1] * t,
@@ -447,14 +500,39 @@ def draw(
         tug_thrust = False
         if t_raw < 1.0:
             show_halo = int(elapsed / 0.2) % 2 == 0
-    else:
-        # OUTBOUND, HOMEBOUND, WON, FAILED — driven by physics / pilot.
-        tug_facing = gs.tug_angle
-        tug_visual_pos = render.tug_visual_center(
-            gs.tug_pos, tug_facing, cargo=gs.has_cargo
+    elif gs.state is State.RETURNING:
+        # Game takes control. Both ships glide in straight lines from their
+        # collision-moment positions to the rescue ship and rotate to align
+        # with its outward facing (0). No orbital motion at this radius.
+        elapsed = gs.dock_align_elapsed
+        target = (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1]))
+        t_raw = min(1.0, elapsed / constants.DOCK_ALIGN_DURATION)
+        t = t_raw * t_raw * (3 - 2 * t_raw)
+        stranded_draw_pos = (
+            gs.dock_stranded_start_pos[0] * (1 - t) + target[0] * t,
+            gs.dock_stranded_start_pos[1] * (1 - t) + target[1] * t,
         )
+        stranded_facing = _lerp_angle(constants.STRANDED_FACING, 0.0, t)
+        tug_visual_pos = (
+            gs.dock_tug_start_pos[0] * (1 - t) + target[0] * t,
+            gs.dock_tug_start_pos[1] * (1 - t) + target[1] * t,
+        )
+        tug_facing = _lerp_angle(gs.dock_tug_start_facing, 0.0, t)
+        tug_thrust = False
+        if t_raw < 1.0:
+            show_halo = int(elapsed / 0.2) % 2 == 0
+    else:
+        # OUTBOUND, HOMEBOUND, WON, FAILED — driven by physics or pilot.
+        tug_facing = gs.tug_angle
+        # WON ends with everything overlapping the rescue ship — no offset
+        # and stranded aligned to the rescue ship's outward facing (0).
+        cargo = gs.has_cargo and gs.state is not State.WON
+        tug_visual_pos = render.tug_visual_center(gs.tug_pos, tug_facing, cargo=cargo)
         tug_thrust = thrusting
+        if gs.state is State.WON:
+            stranded_facing = 0.0
 
+    render.draw_stranded(screen, stranded_draw_pos, stranded_facing)
     if show_halo:
         render.draw_capture_halo(screen, tug_visual_pos, capture_radius)
     render.draw_tug(screen, tug_visual_pos, tug_facing, thrusting=tug_thrust, cargo=False)
@@ -468,20 +546,20 @@ def draw(
             font,
             BRIEFING_TITLE,
             BRIEFING_LINES,
-            [("[SPACE]", HUD_ACTION), (" to continue", HUD)],
+            [("[SPACE]", constants.HUD_ACTION), (" to continue", constants.HUD)],
         )
 
 
 async def run() -> None:
     pygame.init()
-    screen = pygame.display.set_mode(WINDOW_SIZE)
+    screen = pygame.display.set_mode(constants.WINDOW_SIZE)
     pygame.display.set_caption("Orbital Rescue")
     clock = pygame.time.Clock()
     font_path = str(Path(__file__).parent / "Moby-Monospace.ttf")
     font = pygame.font.Font(font_path, 18)
     title_font = pygame.font.Font(font_path, 28)
 
-    stranded_omega = circular_orbit_angular_speed(STRANDED_ORBIT_RADIUS)
+    stranded_omega = circular_orbit_angular_speed(constants.STRANDED_ORBIT_RADIUS)
     capture_setting = "medium"
     stellar_damage = False
     briefing_dismissed = False
@@ -490,8 +568,8 @@ async def run() -> None:
 
     running = True
     while running:
-        real_dt = clock.tick(FPS) / 1000.0
-        accumulator += min(real_dt, MAX_FRAME_DT)
+        real_dt = clock.tick(constants.FPS) / 1000.0
+        accumulator += min(real_dt, constants.MAX_FRAME_DT)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -504,8 +582,8 @@ async def run() -> None:
                     briefing_dismissed = True
                     accumulator = 0.0
                 elif event.key == pygame.K_c:
-                    i = CAPTURE_CYCLE.index(capture_setting)
-                    capture_setting = CAPTURE_CYCLE[(i + 1) % len(CAPTURE_CYCLE)]
+                    i = constants.CAPTURE_CYCLE.index(capture_setting)
+                    capture_setting = constants.CAPTURE_CYCLE[(i + 1) % len(constants.CAPTURE_CYCLE)]
                 elif event.key == pygame.K_d:
                     stellar_damage = not stellar_damage
                 elif event.key == pygame.K_SPACE:
@@ -517,7 +595,7 @@ async def run() -> None:
                         else:
                             gs.launch_outbound()
                     elif gs.state is State.DOCKED:
-                        if gs.dock_align_elapsed >= DOCK_ALIGN_DURATION:
+                        if gs.dock_align_elapsed >= constants.DOCK_ALIGN_DURATION:
                             gs.engage_homebound()
 
         keys = pygame.key.get_pressed()
@@ -527,11 +605,11 @@ async def run() -> None:
             right=piloting and keys[pygame.K_RIGHT],
             thrust=piloting and keys[pygame.K_UP],
         )
-        capture_radius = CAPTURE_RADII[capture_setting]
+        capture_radius = constants.CAPTURE_RADII[capture_setting]
 
-        while accumulator >= DT_SIM:
-            simulate(gs, DT_SIM, inp, capture_radius, stranded_omega)
-            accumulator -= DT_SIM
+        while accumulator >= constants.DT_SIM:
+            simulate(gs, constants.DT_SIM, inp, capture_radius, stranded_omega)
+            accumulator -= constants.DT_SIM
 
         briefing_visible = gs.state is State.PARKED and not briefing_dismissed
         draw(screen, font, title_font, gs, inp.thrust, capture_radius, capture_setting, stellar_damage, briefing_visible)
