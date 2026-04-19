@@ -34,6 +34,7 @@ from constants import (
     ARRIVAL_START_RADIUS,
     CAPTURE_CYCLE,
     CAPTURE_RADII,
+    DOCK_ALIGN_DURATION,
     DOCK_RADIUS,
     DT_SIM,
     FPS,
@@ -50,6 +51,7 @@ from constants import (
     STAR_POS,
     STAR_RADIUS,
     STRANDED,
+    STRANDED_FACING,
     STRANDED_ORBIT_RADIUS,
     TUG,
     TUG_ROT_SPEED,
@@ -92,10 +94,14 @@ def off_screen(pos: tuple[float, float], margin: float = 400.0) -> bool:
 
 
 def tug_launch_orbit() -> tuple[tuple[float, float], tuple[float, float], float]:
-    """Position, velocity, and facing of the tug on the rescue ship's circular orbit."""
+    """Position, velocity, and facing of the tug on the rescue ship's circular orbit.
+
+    Facing matches the orientation the tug had while nested inside the rescue
+    ship — pointing outward from the star — so launching produces no snap.
+    """
     pos = (float(RESCUE_POS[0]), float(RESCUE_POS[1]))
     vel = circular_orbit_velocity(RESCUE_ORBIT_RADIUS, 0.0)
-    facing = math.atan2(vel[1], vel[0])
+    facing = math.atan2(RESCUE_POS[1] - STAR_POS[1], RESCUE_POS[0] - STAR_POS[0])
     return pos, vel, facing
 
 
@@ -134,6 +140,12 @@ def rescue_ship_position(arrival_progress: float) -> tuple[float, float]:
     return (float(STAR_POS[0] + radius), float(STAR_POS[1]))
 
 
+def _lerp_angle(a: float, b: float, t: float) -> float:
+    """Shortest-arc angle interpolation from `a` to `b` by fraction `t`."""
+    diff = (b - a + math.pi) % (2 * math.pi) - math.pi
+    return a + diff * t
+
+
 @dataclass
 class GameState:
     state: State
@@ -145,6 +157,11 @@ class GameState:
     stranded_angle: float
     stranded_pos: tuple[float, float]
     arrival_progress: float
+    dock_align_elapsed: float
+    dock_tug_start_facing: float
+    dock_tug_capture_radius: float
+    dock_tug_capture_angle: float
+    has_cargo: bool
     status: str
 
     @classmethod
@@ -168,6 +185,11 @@ class GameState:
                 STAR_POS, STRANDED_ORBIT_RADIUS, stranded_angle
             ),
             arrival_progress=0.0 if with_arrival else 1.0,
+            dock_align_elapsed=0.0,
+            dock_tug_start_facing=0.0,
+            dock_tug_capture_radius=0.0,
+            dock_tug_capture_angle=0.0,
+            has_cargo=False,
             status=(
                 "Rescue ship arriving..." if with_arrival
                 else "SPACE to launch the tug."
@@ -194,7 +216,8 @@ class GameState:
         vel = circular_orbit_velocity(STRANDED_ORBIT_RADIUS, self.stranded_angle)
         self.tug_pos = self.stranded_pos
         self.tug_vel = vel
-        self.tug_angle = math.atan2(vel[1], vel[0])
+        # Preserve the post-alignment orientation so HOMEBOUND starts with no snap.
+        self.tug_angle = STRANDED_FACING
         self.tug_trail.clear()
         self.tug_trail.append(self.tug_pos)
         self.pilot_age = 0.0
@@ -222,6 +245,9 @@ def simulate(
 
     if gs.state in (State.PARKED, State.OUTBOUND, State.DOCKED):
         _advance_stranded(gs, dt, stranded_omega)
+
+    if gs.state is State.DOCKED:
+        gs.dock_align_elapsed += dt
 
     if gs.state not in (State.OUTBOUND, State.HOMEBOUND):
         return
@@ -261,7 +287,14 @@ def simulate(
         dy = gs.tug_pos[1] - gs.stranded_pos[1]
         if dx * dx + dy * dy <= capture_radius * capture_radius:
             gs.state = State.DOCKED
-            gs.status = "Docked! SPACE to engage the tug."
+            gs.status = "Docked!"
+            gs.dock_align_elapsed = 0.0
+            gs.dock_tug_start_facing = gs.tug_angle
+            tug_dx = gs.tug_pos[0] - STAR_POS[0]
+            tug_dy = gs.tug_pos[1] - STAR_POS[1]
+            gs.dock_tug_capture_radius = math.hypot(tug_dx, tug_dy)
+            gs.dock_tug_capture_angle = math.atan2(tug_dy, tug_dx)
+            gs.has_cargo = True
             return
     else:
         rdx = gs.tug_pos[0] - RESCUE_POS[0]
@@ -308,10 +341,12 @@ def _center_content(
     if gs.state is State.PARKED:
         return [[("[SPACE]", HUD_ACTION), (" launch tug", HUD)]]
     if gs.state is State.DOCKED:
-        return [
-            [("docked with ", HUD), ("stranded", STRANDED), (" vessel", HUD)],
-            [("[SPACE]", HUD_ACTION), (" to begin return journey", HUD)],
-        ]
+        lines = [[("docked with ", HUD), ("stranded", STRANDED), (" vessel", HUD)]]
+        if gs.dock_align_elapsed >= DOCK_ALIGN_DURATION:
+            lines.append(
+                [("[SPACE]", HUD_ACTION), (" to begin return journey", HUD)]
+            )
+        return lines
     color = (
         HUD_OK if gs.state is State.WON
         else HUD_BAD if gs.state is State.FAILED
@@ -377,28 +412,52 @@ def draw(
     rescue_pos = rescue_ship_position(gs.arrival_progress)
     render.draw_rescue_ship(screen, rescue_pos)
 
-    # Tug parked inside the rescue ship until it launches.
+    # Stranded vessel is always drawn in place with its fixed orientation —
+    # it never rotates; the tug is the rotating one after docking.
+    render.draw_stranded(screen, gs.stranded_pos)
+
+    # Tug position/facing/thrust depend on state.
+    show_halo = True
     if gs.state in (State.ARRIVING, State.PARKED):
+        # Nested inside the rescue ship, facing outward from the star.
         dx = STAR_POS[0] - rescue_pos[0]
         dy = STAR_POS[1] - rescue_pos[1]
-        rescue_facing_out = math.atan2(dy, dx) + math.pi
-        render.draw_capture_halo(screen, rescue_pos, capture_radius)
-        render.draw_tug(screen, rescue_pos, rescue_facing_out, thrusting=False, cargo=False)
-
-    if gs.state in (State.ARRIVING, State.PARKED, State.OUTBOUND):
-        render.draw_stranded(screen, gs.stranded_pos)
-
-    if gs.state is State.OUTBOUND:
-        render.draw_capture_halo(screen, gs.tug_pos, capture_radius)
-        render.draw_tug(screen, gs.tug_pos, gs.tug_angle, thrusting, cargo=False)
+        tug_facing = math.atan2(dy, dx) + math.pi
+        tug_visual_pos = rescue_pos
+        tug_thrust = False
     elif gs.state is State.DOCKED:
-        tug_c = render.tug_visual_center(gs.stranded_pos, gs.tug_angle, cargo=True)
-        render.draw_capture_halo(screen, tug_c, capture_radius)
-        render.draw_tug(screen, gs.stranded_pos, gs.tug_angle, thrusting=False, cargo=True)
-    elif gs.state in (State.HOMEBOUND, State.WON, State.FAILED):
-        tug_c = render.tug_visual_center(gs.tug_pos, gs.tug_angle, cargo=True)
-        render.draw_capture_halo(screen, tug_c, capture_radius)
-        render.draw_tug(screen, gs.tug_pos, gs.tug_angle, thrusting, cargo=True)
+        # Game takes control. The tug is treated as if it slipped into a
+        # circular orbit at its capture radius, and we lerp from that
+        # orbital motion to the stranded vessel's docked offset.
+        elapsed = gs.dock_align_elapsed
+        omega = circular_orbit_angular_speed(gs.dock_tug_capture_radius)
+        tug_orbit_angle = gs.dock_tug_capture_angle + omega * elapsed
+        tug_orbit_pos = (
+            STAR_POS[0] + gs.dock_tug_capture_radius * math.cos(tug_orbit_angle),
+            STAR_POS[1] + gs.dock_tug_capture_radius * math.sin(tug_orbit_angle),
+        )
+        target_pos = render.tug_visual_center(gs.stranded_pos, STRANDED_FACING, cargo=True)
+        t_raw = min(1.0, elapsed / DOCK_ALIGN_DURATION)
+        t = t_raw * t_raw * (3 - 2 * t_raw)
+        tug_facing = _lerp_angle(gs.dock_tug_start_facing, STRANDED_FACING, t)
+        tug_visual_pos = (
+            tug_orbit_pos[0] * (1 - t) + target_pos[0] * t,
+            tug_orbit_pos[1] * (1 - t) + target_pos[1] * t,
+        )
+        tug_thrust = False
+        if t_raw < 1.0:
+            show_halo = int(elapsed / 0.2) % 2 == 0
+    else:
+        # OUTBOUND, HOMEBOUND, WON, FAILED — driven by physics / pilot.
+        tug_facing = gs.tug_angle
+        tug_visual_pos = render.tug_visual_center(
+            gs.tug_pos, tug_facing, cargo=gs.has_cargo
+        )
+        tug_thrust = thrusting
+
+    if show_halo:
+        render.draw_capture_halo(screen, tug_visual_pos, capture_radius)
+    render.draw_tug(screen, tug_visual_pos, tug_facing, thrusting=tug_thrust, cargo=False)
 
     _draw_hud(screen, font, gs, capture_setting, stellar_damage, briefing_visible)
 
@@ -458,7 +517,8 @@ async def run() -> None:
                         else:
                             gs.launch_outbound()
                     elif gs.state is State.DOCKED:
-                        gs.engage_homebound()
+                        if gs.dock_align_elapsed >= DOCK_ALIGN_DURATION:
+                            gs.engage_homebound()
 
         keys = pygame.key.get_pressed()
         piloting = gs.state in (State.OUTBOUND, State.HOMEBOUND)

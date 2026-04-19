@@ -50,6 +50,8 @@ MAX_PILOT_SECONDS = 180.0
 
 ARRIVAL_START_RADIUS = 700.0         # rescue ship enters from off-screen right
 ARRIVAL_DURATION = 3.0               # seconds to settle into station-keeping
+DOCK_ALIGN_DURATION = 5.0            # seconds — stranded + tug rotate to prograde
+STRANDED_FACING = -math.pi / 2       # disabled vessel — fixed pointing "up"
 
 CAPTURE_RADII: dict[str, float] = {
     "small": 7.0,
