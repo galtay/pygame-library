@@ -2,11 +2,15 @@
 name = "pygame-library"
 version = "0.1.0"
 requires-python = ">=3.13"
+# Versions are pinned (==) to keep the native and pygbag-bundled pygame-ce
+# in sync. pygbag bundles its own pygame-ce wheel, so upgrading either
+# version in isolation can cause a native/browser drift. Upgrade both
+# together after checking pygbag's CDN index for the bundled pygame-ce.
 dependencies = [
-    "pygame-ce>=2.5.7",
+    "pygame-ce==2.5.7",
 ]
 
 [dependency-groups]
 dev = [
-    "pygbag>=0.9.3",
+    "pygbag==0.9.3",
 ]

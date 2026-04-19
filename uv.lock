@@ -37,10 +37,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pygame-ce", specifier = ">=2.5.7" }]
+requires-dist = [{ name = "pygame-ce", specifier = "==2.5.7" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pygbag", specifier = ">=0.9.3" }]
+dev = [{ name = "pygbag", specifier = "==0.9.3" }]
 
 [[package]]
 name = "pygbag"
