@@ -17,6 +17,7 @@ from constants import (
     RESCUE,
     RESCUE_ORBIT_RADIUS,
     RESCUE_SIZE,
+    STRANDED_FACING,
     STAR_CORE,
     STAR_CORONA,
     STAR_CORONA_RADIUS,
@@ -114,11 +115,12 @@ def draw_rescue_ship(surf: pygame.Surface, pos: tuple[float, float]) -> None:
         pygame.draw.line(surf, FLAME, base, tip, 2)
 
 
-STRANDED_FACING = -math.pi / 2   # disabled vessel — fixed pointing "up"
-
-
-def draw_stranded(surf: pygame.Surface, pos: tuple[float, float]) -> None:
-    draw_triangle(surf, STRANDED, pos, STRANDED_FACING, STRANDED_SIZE)
+def draw_stranded(
+    surf: pygame.Surface,
+    pos: tuple[float, float],
+    facing: float = STRANDED_FACING,
+) -> None:
+    draw_triangle(surf, STRANDED, pos, facing, STRANDED_SIZE)
 
 
 CARGO_TUG_OFFSET = 12.0
