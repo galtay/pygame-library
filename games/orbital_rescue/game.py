@@ -1,10 +1,19 @@
-"""Game loop, state machine, and input handling for Orbital Rescue.
+"""Orbital Rescue — pilot a tug from the rescue ship to a stranded ship in
+circular orbit around a planet, then pilot the combined craft home.
+
+Three phases:
+
+1. OUTBOUND  — tug starts in a circular orbit at the rescue ship's radius.
+               Player rotates + thrusts to intercept the stranded ship.
+2. DOCKED    — combined body rides the stranded ship's circular orbit.
+               Player chooses when to engage the tug controls.
+3. HOMEBOUND — player pilots the tug + cargo back to the rescue ship's
+               fixed position, fighting gravity.
 
 The loop runs a fixed-timestep simulation driven by real elapsed time, so
 gameplay is identical regardless of the display refresh rate. Rendering
-runs once per loop iteration at whatever rate the platform delivers.
-
-The loop is async so the same code runs under pygbag in the browser; the
+runs once per loop iteration at whatever rate the platform delivers. The
+loop is async so the same code runs under pygbag in the browser; the
 `await asyncio.sleep(0)` after each flip yields to the JS event loop.
 """
 
