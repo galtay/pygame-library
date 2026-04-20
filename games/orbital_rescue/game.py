@@ -119,22 +119,13 @@ def _lerp_angle(a: float, b: float, t: float) -> float:
     return a + diff * t
 
 
-def _closing_rate(
-    tug_pos: tuple[float, float],
-    tug_vel: tuple[float, float],
-    target_pos: tuple[float, float],
-    target_vel: tuple[float, float],
+def _impact_speed(
+    tug_vel: tuple[float, float], target_vel: tuple[float, float]
 ) -> float:
-    """Rate at which the distance between tug and target is shrinking.
-    Positive = closing, negative = receding."""
-    px = target_pos[0] - tug_pos[0]
-    py = target_pos[1] - tug_pos[1]
-    d = math.hypot(px, py)
-    if d == 0.0:
-        return 0.0
-    vrx = target_vel[0] - tug_vel[0]
-    vry = target_vel[1] - tug_vel[1]
-    return -(px * vrx + py * vry) / d
+    """Magnitude of the tug-vs-target relative velocity — i.e., the impact
+    speed if the two collided right now. Direction-agnostic; low = smooth,
+    high = rough."""
+    return math.hypot(tug_vel[0] - target_vel[0], tug_vel[1] - target_vel[1])
 
 
 @dataclass
@@ -298,9 +289,7 @@ def simulate(
         dy = gs.tug_pos[1] - gs.stranded_pos[1]
         if dx * dx + dy * dy <= capture_radius * capture_radius:
             stranded_vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
-            gs.dv_stranded_at_lock = _closing_rate(
-                gs.tug_pos, gs.tug_vel, gs.stranded_pos, stranded_vel
-            )
+            gs.dv_stranded_at_lock = _impact_speed(gs.tug_vel, stranded_vel)
             gs.state = State.DOCKED
             gs.status = "Docked!"
             gs.dock_align_elapsed = 0.0
@@ -315,12 +304,7 @@ def simulate(
         rdx = gs.tug_pos[0] - constants.RESCUE_POS[0]
         rdy = gs.tug_pos[1] - constants.RESCUE_POS[1]
         if rdx * rdx + rdy * rdy <= capture_radius * capture_radius:
-            gs.dv_rescue_at_lock = _closing_rate(
-                gs.tug_pos,
-                gs.tug_vel,
-                (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1])),
-                (0.0, 0.0),
-            )
+            gs.dv_rescue_at_lock = _impact_speed(gs.tug_vel, (0.0, 0.0))
             gs.dv_rescue_locked = True
             gs.state = State.RETURNING
             gs.status = "Returning to rescue ship..."
@@ -401,23 +385,18 @@ def _draw_hud(
         dv_s, dv_s_color = gs.dv_stranded_at_lock, constants.HUD_ACTION
     else:
         sv = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
-        dv_s = _closing_rate(gs.tug_pos, gs.tug_vel, gs.stranded_pos, sv)
+        dv_s = _impact_speed(gs.tug_vel, sv)
         dv_s_color = constants.HUD
     top_left_lines.append(
-        [("delta-v ", constants.HUD), ("stranded", constants.STRANDED), (f": {dv_s:+6.1f} px/s", dv_s_color)]
+        [("delta-v ", constants.HUD), ("stranded", constants.STRANDED), (f": {dv_s:5.1f} px/s", dv_s_color)]
     )
     if gs.dv_rescue_locked:
         dv_r, dv_r_color = gs.dv_rescue_at_lock, constants.HUD_ACTION
     else:
-        dv_r = _closing_rate(
-            gs.tug_pos,
-            gs.tug_vel,
-            (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1])),
-            (0.0, 0.0),
-        )
+        dv_r = _impact_speed(gs.tug_vel, (0.0, 0.0))
         dv_r_color = constants.HUD
     top_left_lines.append(
-        [("delta-v ", constants.HUD), ("rescue", constants.RESCUE), (f": {dv_r:+6.1f} px/s", dv_r_color)]
+        [("delta-v ", constants.HUD), ("rescue", constants.RESCUE), (f": {dv_r:5.1f} px/s", dv_r_color)]
     )
     for i, segs in enumerate(top_left_lines):
         s = render.render_key_line(font, segs)
