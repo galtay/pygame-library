@@ -80,6 +80,9 @@ PHASE_ANIM_DURATION = 5.0            # seconds — shared duration for the
                                      # game-driven docking and returning
                                      # animations (DOCKED, RETURNING)
 STRANDED_FACING = -math.pi / 2       # disabled vessel — fixed pointing "up"
+# Stranded ship starts opposite the rescue ship every mission so timing/score
+# comparisons across attempts are meaningful.
+STRANDED_START_ANGLE = math.pi
 
 CAPTURE_RADII: dict[str, float] = {
     "small": 7.0,
@@ -87,6 +90,26 @@ CAPTURE_RADII: dict[str, float] = {
     "large": 30.0,
 }
 CAPTURE_CYCLE: tuple[str, ...] = ("small", "medium", "large")
+
+# Maximum impact speed allowed at either dock — exceeding it is a hard fail.
+# Cycled by the [v] settings key.
+DOCK_SPEED_LIMITS: dict[str, float] = {
+    "lenient": 200.0,
+    "standard": 100.0,
+    "strict": 50.0,
+}
+DOCK_SPEED_CYCLE: tuple[str, ...] = ("lenient", "standard", "strict")
+
+# Combined difficulty: a single [d] key cycles the three values together.
+# Level 1 = forgiving, level 3 = unforgiving. damage_mult scales both
+# TUG_DAMAGE_RATE and STRANDED_DAMAGE_RATE proportionally — flares always
+# fire after the delay, the rate just varies.
+DIFFICULTY_PRESETS: dict[str, dict[str, str | float]] = {
+    "1": {"capture": "large", "rv_max": "lenient", "damage_mult": 0.5},
+    "2": {"capture": "medium", "rv_max": "standard", "damage_mult": 1.0},
+    "3": {"capture": "small", "rv_max": "strict", "damage_mult": 2.0},
+}
+DIFFICULTY_CYCLE: tuple[str, ...] = ("1", "2", "3")
 
 TUG_THRUST = 288.0                     # px/s²  (old 0.08 px/frame² × 60²)
 TUG_ROT_SPEED = math.radians(180.0)    # rad/s  (old 3°/frame × 60)

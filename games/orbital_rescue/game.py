@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import random
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -68,10 +67,6 @@ def tug_launch_orbit() -> tuple[tuple[float, float], tuple[float, float], float]
     vel = circular_orbit_velocity(constants.RESCUE_ORBIT_RADIUS, 0.0)
     facing = math.atan2(constants.RESCUE_POS[1] - constants.STAR_POS[1], constants.RESCUE_POS[0] - constants.STAR_POS[0])
     return pos, vel, facing
-
-
-def random_stranded_angle() -> float:
-    return random.uniform(0.0, 2 * math.pi)
 
 
 BRIEFING_TITLE = "MISSION BRIEFING"
@@ -167,13 +162,15 @@ class GameState:
 
     @classmethod
     def new(cls, *, with_arrival: bool = False) -> "GameState":
-        """Fresh game: tug parked on the rescue ship, stranded ship at a random phase.
+        """Fresh game: tug parked on the rescue ship, stranded ship at the
+        fixed start angle (opposite the rescue ship) so per-mission timing
+        and score comparisons are meaningful.
 
         `with_arrival=True` runs the intro animation; reset (R) uses the
         default so the player jumps straight to the settled state.
         """
         pos, _vel, facing = tug_launch_orbit()
-        stranded_angle = random_stranded_angle()
+        stranded_angle = constants.STRANDED_START_ANGLE
         return cls(
             state=State.ARRIVING if with_arrival else State.PARKED,
             tug_pos=pos,
@@ -243,7 +240,8 @@ def simulate(
     inp: InputFrame,
     capture_radius: float,
     stranded_omega: float,
-    stellar_damage_on: bool,
+    damage_mult: float,
+    dock_speed_limit: float,
 ) -> None:
     """Advance the game world by one fixed simulation step (`dt` seconds)."""
     if gs.state in (State.OUTBOUND, State.DOCKED, State.HOMEBOUND, State.RETURNING):
@@ -254,11 +252,11 @@ def simulate(
     elif gs.state is State.PARKED:
         _advance_stranded(gs, dt, stranded_omega)
     elif gs.state is State.OUTBOUND:
-        _tick_outbound(gs, dt, inp, capture_radius, stranded_omega, stellar_damage_on)
+        _tick_outbound(gs, dt, inp, capture_radius, stranded_omega, damage_mult, dock_speed_limit)
     elif gs.state is State.DOCKED:
-        _tick_docked(gs, dt, stranded_omega, stellar_damage_on)
+        _tick_docked(gs, dt, stranded_omega, damage_mult)
     elif gs.state is State.HOMEBOUND:
-        _tick_homebound(gs, dt, inp, capture_radius, stellar_damage_on)
+        _tick_homebound(gs, dt, inp, capture_radius, damage_mult, dock_speed_limit)
     elif gs.state is State.RETURNING:
         _tick_returning(gs, dt)
     # WON, FAILED — no-op
@@ -277,34 +275,35 @@ def _tick_outbound(
     inp: InputFrame,
     capture_radius: float,
     stranded_omega: float,
-    stellar_damage_on: bool,
+    damage_mult: float,
+    dock_speed_limit: float,
 ) -> None:
     _advance_stranded(gs, dt, stranded_omega)
     _apply_pilot_input(gs, dt, inp)
     if _hit_star(gs):
         _fail(gs, "Crashed the tug into the star.")
         return
-    if _flares_active(gs, stellar_damage_on):
-        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt)
+    if _flares_active(gs):
+        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt, damage_mult)
         if tug_maxed:
             _fail(gs, "Tug destroyed by solar flares.")
             return
         if stranded_maxed:
             _fail(gs, "Stranded vessel lost to solar flares.")
             return
-    if _captured_stranded(gs, capture_radius):
+    if _captured_stranded(gs, capture_radius, dock_speed_limit):
         return
     if _piloting_lost(gs):
         _fail(gs, "Tug lost in space.")
 
 
 def _tick_docked(
-    gs: GameState, dt: float, stranded_omega: float, stellar_damage_on: bool
+    gs: GameState, dt: float, stranded_omega: float, damage_mult: float
 ) -> None:
     _advance_stranded(gs, dt, stranded_omega)
     gs.phase_anim_elapsed += dt
-    if _flares_active(gs, stellar_damage_on):
-        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt)
+    if _flares_active(gs):
+        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt, damage_mult)
         if tug_maxed:
             _fail(gs, "Tug destroyed by solar flares.")
             return
@@ -318,22 +317,23 @@ def _tick_homebound(
     dt: float,
     inp: InputFrame,
     capture_radius: float,
-    stellar_damage_on: bool,
+    damage_mult: float,
+    dock_speed_limit: float,
 ) -> None:
     _apply_pilot_input(gs, dt, inp)
     gs.stranded_pos = gs.tug_pos
     if _hit_star(gs):
         _fail(gs, "Crashed on the way home.")
         return
-    if _flares_active(gs, stellar_damage_on):
-        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt)
+    if _flares_active(gs):
+        tug_maxed, stranded_maxed = _accumulate_damage(gs, dt, damage_mult)
         if tug_maxed:
             _fail(gs, "Tug destroyed by solar flares.")
             return
         if stranded_maxed:
             _fail(gs, "Stranded vessel lost to solar flares.")
             return
-    if _captured_rescue(gs, capture_radius):
+    if _captured_rescue(gs, capture_radius, dock_speed_limit):
         return
     if _piloting_lost(gs):
         _fail(gs, "Lost on the way home.")
@@ -372,9 +372,9 @@ def _hit_star(gs: GameState) -> bool:
     return pdx * pdx + pdy * pdy <= constants.STAR_RADIUS * constants.STAR_RADIUS
 
 
-def _flares_active(gs: GameState, stellar_damage_on: bool) -> bool:
-    """True iff stellar flares are currently damaging ships (post-delay)."""
-    return stellar_damage_on and gs.mission_elapsed >= constants.INSTABILITY_DELAY
+def _flares_active(gs: GameState) -> bool:
+    """True iff stellar flares are currently active (post-instability-delay)."""
+    return gs.mission_elapsed >= constants.INSTABILITY_DELAY
 
 
 def _flare_intensity(gs: GameState) -> float:
@@ -385,24 +385,24 @@ def _flare_intensity(gs: GameState) -> float:
     return min(1.0, (gs.mission_elapsed - constants.INSTABILITY_DELAY) / constants.INSTABILITY_FADE)
 
 
-def _accumulate_damage(gs: GameState, dt: float) -> tuple[bool, bool]:
+def _accumulate_damage(gs: GameState, dt: float, damage_mult: float) -> tuple[bool, bool]:
     """Tick radiation damage on both ships using their own positions and a
-    single danger radius. The hardened tug accumulates much more slowly
-    than the unshielded stranded vessel at the same radius. Returns
-    (tug_maxed, stranded_maxed)."""
+    single danger radius. Both rates are scaled by the difficulty's
+    damage_mult; the hardened tug already takes damage 3x slower than the
+    stranded vessel at baseline. Returns (tug_maxed, stranded_maxed)."""
     danger_sq = constants.DAMAGE_DANGER_RADIUS * constants.DAMAGE_DANGER_RADIUS
     sx, sy = constants.STAR_POS
     tdx, tdy = gs.tug_pos[0] - sx, gs.tug_pos[1] - sy
     if tdx * tdx + tdy * tdy < danger_sq:
         gs.tug_damage = min(
             constants.DAMAGE_CAPACITY,
-            gs.tug_damage + constants.TUG_DAMAGE_RATE * dt,
+            gs.tug_damage + constants.TUG_DAMAGE_RATE * damage_mult * dt,
         )
     sdx, sdy = gs.stranded_pos[0] - sx, gs.stranded_pos[1] - sy
     if sdx * sdx + sdy * sdy < danger_sq:
         gs.stranded_damage = min(
             constants.DAMAGE_CAPACITY,
-            gs.stranded_damage + constants.STRANDED_DAMAGE_RATE * dt,
+            gs.stranded_damage + constants.STRANDED_DAMAGE_RATE * damage_mult * dt,
         )
     return (
         gs.tug_damage >= constants.DAMAGE_CAPACITY,
@@ -445,13 +445,21 @@ def _fail(gs: GameState, message: str) -> None:
     gs.state = State.FAILED
 
 
-def _captured_stranded(gs: GameState, capture_radius: float) -> bool:
+def _captured_stranded(
+    gs: GameState, capture_radius: float, dock_speed_limit: float
+) -> bool:
+    """Returns True iff a state transition occurred (DOCKED on a clean dock,
+    FAILED if impact speed exceeded the dock_speed_limit hard fail)."""
     dx = gs.tug_pos[0] - gs.stranded_pos[0]
     dy = gs.tug_pos[1] - gs.stranded_pos[1]
     if dx * dx + dy * dy > capture_radius * capture_radius:
         return False
     stranded_vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
-    gs.rv_stranded_at_lock = _relative_speed(gs.tug_vel, stranded_vel)
+    impact = _relative_speed(gs.tug_vel, stranded_vel)
+    gs.rv_stranded_at_lock = impact
+    if impact > dock_speed_limit:
+        _fail(gs, "Hard dock — stranded vessel lost.")
+        return True
     gs.state = State.DOCKED
     gs.status = "Docked!"
     gs.phase_anim_elapsed = 0.0
@@ -464,13 +472,21 @@ def _captured_stranded(gs: GameState, capture_radius: float) -> bool:
     return True
 
 
-def _captured_rescue(gs: GameState, capture_radius: float) -> bool:
+def _captured_rescue(
+    gs: GameState, capture_radius: float, dock_speed_limit: float
+) -> bool:
+    """Returns True iff a state transition occurred (RETURNING on a clean
+    dock, FAILED if impact speed exceeded the dock_speed_limit hard fail)."""
     rdx = gs.tug_pos[0] - constants.RESCUE_POS[0]
     rdy = gs.tug_pos[1] - constants.RESCUE_POS[1]
     if rdx * rdx + rdy * rdy > capture_radius * capture_radius:
         return False
-    gs.rv_rescue_at_lock = _relative_speed(gs.tug_vel, (0.0, 0.0))
+    impact = _relative_speed(gs.tug_vel, (0.0, 0.0))
+    gs.rv_rescue_at_lock = impact
     gs.rv_rescue_locked = True
+    if impact > dock_speed_limit:
+        _fail(gs, "Hard dock — tug crashed on return.")
+        return True
     gs.state = State.RETURNING
     gs.status = "Returning to rescue ship..."
     gs.phase_anim_elapsed = 0.0
@@ -490,11 +506,19 @@ def _advance_stranded(gs: GameState, dt: float, omega: float) -> None:
 
 
 def _settings_lines(
-    capture_setting: str, stellar_damage: bool
+    difficulty: str,
 ) -> list[list[tuple[str, tuple[int, int, int]]]]:
+    """Settings readout: cyclable [d]ifficulty plus the three derived values."""
+    preset = constants.DIFFICULTY_PRESETS[difficulty]
+    capture = str(preset["capture"])
+    rv_setting = str(preset["rv_max"])
+    rv_limit = constants.DOCK_SPEED_LIMITS[rv_setting]
+    damage_mult = float(preset["damage_mult"])
     return [
-        [("[c]", constants.HUD_ACTION), (f"apture radius: {capture_setting}", constants.HUD)],
-        [("[d]", constants.HUD_ACTION), (f"amage: {'on' if stellar_damage else 'off'}", constants.HUD)],
+        [("[d]", constants.HUD_ACTION), (f"ifficulty: {difficulty}", constants.HUD)],
+        [("  capture radius: ", constants.HUD), (capture, constants.HUD_ACTION)],
+        [("  rv max: ", constants.HUD), (f"{rv_limit:.0f} px/s", constants.HUD_ACTION)],
+        [("  damage rate: ", constants.HUD), (f"{damage_mult:.1f}x", constants.HUD_ACTION)],
     ]
 
 
@@ -510,9 +534,11 @@ RESCUE_REPORT_TITLE = "RESCUE COMPLETE"
 def _rescue_report_body(
     gs: GameState,
 ) -> list[list[tuple[str, tuple[int, int, int]]]]:
-    """Body of the win-screen modal: mission duration + the two locked dock relative speeds."""
+    """Body of the win-screen modal: mission time (which is the score),
+    the two locked dock relative speeds, fuel used, and per-ship damage."""
+    fuel_used_pct = (constants.FUEL_CAPACITY - gs.fuel) / constants.FUEL_CAPACITY * 100
     return [
-        [("mission time: ", constants.HUD), (_format_mission_time(gs.mission_elapsed), constants.HUD_ACTION)],
+        [("score: ", constants.HUD), (_format_mission_time(gs.mission_elapsed), constants.HUD_OK)],
         [],
         [
             ("rv at ", constants.HUD),
@@ -523,6 +549,18 @@ def _rescue_report_body(
             ("rv at ", constants.HUD),
             ("rescue", constants.RESCUE),
             (f" dock: {gs.rv_rescue_at_lock:5.1f} px/s", constants.HUD_ACTION),
+        ],
+        [],
+        [("fuel used: ", constants.HUD), (f"{int(round(fuel_used_pct))}%", constants.HUD_ACTION)],
+        [
+            ("damage to ", constants.HUD),
+            ("tug", constants.TUG),
+            (f": {int(round(gs.tug_damage))}%", constants.HUD_ACTION),
+        ],
+        [
+            ("damage to ", constants.HUD),
+            ("stranded", constants.STRANDED),
+            (f": {int(round(gs.stranded_damage))}%", constants.HUD_ACTION),
         ],
     ]
 
@@ -644,7 +682,6 @@ def _draw_telemetry_section(
     rect: pygame.Rect,
     font: pygame.font.Font,
     gs: GameState,
-    stellar_damage_on: bool,
 ) -> None:
     """Sensor readouts: time, two relative velocities, fuel + two damage meters, star state."""
     _draw_section_frame(screen, rect, font, "TELEMETRY", constants.PANEL_HEADER)
@@ -685,36 +722,34 @@ def _draw_telemetry_section(
 
     y += 8  # spacer between numerical readouts and meters
 
-    # Labels padded to a fixed width (8 chars) so all three bars start at the
-    # same x; ship-specific damage meters use ship colors so the panel reads
-    # at a glance.
+    # Labels padded to 15 chars so all three bars start at the same x. The
+    # label color identifies which ship the meter belongs to; the bar fill
+    # color indicates ok/bad state.
     fuel_pct = max(0.0, min(1.0, gs.fuel / constants.FUEL_CAPACITY))
     _draw_meter(
-        screen, font, x, y, w, "fuel    ", constants.HUD,
+        screen, font, x, y, w, "tug fuel       ", constants.TUG,
         fuel_pct, constants.HUD_OK, f"{int(round(fuel_pct * 100)):3d}%",
     )
     y += line_h
     tug_pct = max(0.0, min(1.0, gs.tug_damage / constants.DAMAGE_CAPACITY))
     _draw_meter(
-        screen, font, x, y, w, "tug     ", constants.TUG,
+        screen, font, x, y, w, "tug damage     ", constants.TUG,
         tug_pct, constants.HUD_BAD, f"{int(round(tug_pct * 100)):3d}%",
     )
     y += line_h
     str_pct = max(0.0, min(1.0, gs.stranded_damage / constants.DAMAGE_CAPACITY))
     _draw_meter(
-        screen, font, x, y, w, "stranded", constants.STRANDED,
+        screen, font, x, y, w, "stranded damage", constants.STRANDED,
         str_pct, constants.HUD_BAD, f"{int(round(str_pct * 100)):3d}%",
     )
     y += line_h
 
     # Star state: countdown to instability, then FLARES once it triggers.
     in_mission = gs.state in (State.OUTBOUND, State.DOCKED, State.HOMEBOUND, State.RETURNING)
-    if not stellar_damage_on:
-        val_text, val_color = "off", constants.PANEL_HEADER
-    elif in_mission and gs.mission_elapsed < constants.INSTABILITY_DELAY:
+    if in_mission and gs.mission_elapsed < constants.INSTABILITY_DELAY:
         countdown = constants.INSTABILITY_DELAY - gs.mission_elapsed
         val_text, val_color = f"T-{countdown:4.1f}s", constants.HUD_ACTION
-    elif _flares_active(gs, stellar_damage_on):
+    elif _flares_active(gs):
         val_text, val_color = "FLARES", constants.HUD_BAD
     else:
         val_text, val_color = "stable", constants.HUD
@@ -795,13 +830,12 @@ def _draw_settings_section(
     screen: pygame.Surface,
     rect: pygame.Rect,
     font: pygame.font.Font,
-    capture_setting: str,
-    stellar_damage: bool,
+    difficulty: str,
 ) -> None:
     _draw_section_frame(screen, rect, font, "SETTINGS", constants.PANEL_HEADER)
     x, y, _w = _box_inner(rect)
     line_h = font.get_height() + 2
-    for segs in _settings_lines(capture_setting, stellar_damage):
+    for segs in _settings_lines(difficulty):
         s = render.render_key_line(font, segs)
         screen.blit(s, (x, y))
         y += line_h
@@ -837,8 +871,7 @@ def _draw_side_panel(
     font: pygame.font.Font,
     title_font: pygame.font.Font,
     gs: GameState,
-    capture_setting: str,
-    stellar_damage: bool,
+    difficulty: str,
     briefing_visible: bool,
 ) -> None:
     panel_w = constants.SIDE_PANEL_WIDTH
@@ -858,9 +891,10 @@ def _draw_side_panel(
     box_overhead = _BOX_PAD_TOP + _BOX_PAD_BOT + 2
 
     # Telemetry: 7 content lines (time, two rv, three meters, star) + 8 px
-    # spacer between the numerical readouts and the meter bars.
+    # spacer between the numerical readouts and the meter bars. Settings
+    # has 4 lines (difficulty + three derived readouts).
     telemetry_h = box_overhead + line_h * 7 + 8
-    settings_h = box_overhead + line_h * 2
+    settings_h = box_overhead + line_h * 4
     controls_h = box_overhead + line_h * 2
     section_gap = 16
 
@@ -875,11 +909,11 @@ def _draw_side_panel(
     y += mission_h + section_gap
 
     telemetry_rect = pygame.Rect(x, y, inner_w, telemetry_h)
-    _draw_telemetry_section(screen, telemetry_rect, font, gs, stellar_damage)
+    _draw_telemetry_section(screen, telemetry_rect, font, gs)
     y += telemetry_h + section_gap
 
     settings_rect = pygame.Rect(x, y, inner_w, settings_h)
-    _draw_settings_section(screen, settings_rect, font, capture_setting, stellar_damage)
+    _draw_settings_section(screen, settings_rect, font, difficulty)
     y += settings_h + section_gap
 
     controls_rect = pygame.Rect(x, y, inner_w, controls_h)
@@ -893,8 +927,7 @@ def draw(
     gs: GameState,
     thrusting: bool,
     capture_radius: float,
-    capture_setting: str,
-    stellar_damage: bool,
+    difficulty: str,
     briefing_visible: bool,
 ) -> None:
     cam = render.Camera(gs.view_zoom)
@@ -903,11 +936,10 @@ def draw(
     # out of the side panel.
     screen.set_clip(pygame.Rect(*constants.VIEWPORT_RECT))
     render.draw_background(screen, cam)
-    if stellar_damage:
-        intensity = _flare_intensity(gs)
-        if intensity > 0.0:
-            t_wall = pygame.time.get_ticks() / 1000.0
-            render.draw_radiation_zone(screen, cam, t_wall, intensity)
+    intensity = _flare_intensity(gs)
+    if intensity > 0.0:
+        t_wall = pygame.time.get_ticks() / 1000.0
+        render.draw_radiation_zone(screen, cam, t_wall, intensity)
     render.draw_trail(screen, gs.tug_trail, cam)
     rescue_pos = rescue_ship_position(gs.arrival_progress)
     render.draw_rescue_ship(screen, rescue_pos, cam)
@@ -990,7 +1022,7 @@ def draw(
 
     screen.set_clip(None)
 
-    _draw_side_panel(screen, font, title_font, gs, capture_setting, stellar_damage, briefing_visible)
+    _draw_side_panel(screen, font, title_font, gs, difficulty, briefing_visible)
 
 
 async def run() -> None:
@@ -1003,8 +1035,7 @@ async def run() -> None:
     title_font = pygame.font.Font(font_path, 22)
 
     stranded_omega = circular_orbit_angular_speed(constants.STRANDED_ORBIT_RADIUS)
-    capture_setting = "medium"
-    stellar_damage = True
+    difficulty = "1"
     briefing_dismissed = False
     gs = GameState.new(with_arrival=True)
     accumulator = 0.0
@@ -1021,14 +1052,17 @@ async def run() -> None:
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_r:
-                    gs = GameState.new()
-                    briefing_dismissed = True
+                    # Shift+R: hard reset to the start (arrival + briefing
+                    # again). Plain R: quick retry from PARKED. Shift+R is
+                    # intentionally not surfaced in the controls block —
+                    # it's a debugging convenience.
+                    hard = bool(event.mod & pygame.KMOD_SHIFT)
+                    gs = GameState.new(with_arrival=hard)
+                    briefing_dismissed = not hard
                     accumulator = 0.0
-                elif event.key == pygame.K_c:
-                    i = constants.CAPTURE_CYCLE.index(capture_setting)
-                    capture_setting = constants.CAPTURE_CYCLE[(i + 1) % len(constants.CAPTURE_CYCLE)]
                 elif event.key == pygame.K_d:
-                    stellar_damage = not stellar_damage
+                    i = constants.DIFFICULTY_CYCLE.index(difficulty)
+                    difficulty = constants.DIFFICULTY_CYCLE[(i + 1) % len(constants.DIFFICULTY_CYCLE)]
                 elif event.key == pygame.K_SPACE:
                     if gs.state is State.ARRIVING:
                         gs.finish_arrival()
@@ -1048,14 +1082,17 @@ async def run() -> None:
             right=piloting and keys[pygame.K_RIGHT],
             thrust=piloting and keys[pygame.K_UP],
         )
-        capture_radius = constants.CAPTURE_RADII[capture_setting]
+        preset = constants.DIFFICULTY_PRESETS[difficulty]
+        capture_radius = constants.CAPTURE_RADII[str(preset["capture"])]
+        dock_speed_limit = constants.DOCK_SPEED_LIMITS[str(preset["rv_max"])]
+        damage_mult = float(preset["damage_mult"])
 
         while accumulator >= constants.DT_SIM:
-            simulate(gs, constants.DT_SIM, inp, capture_radius, stranded_omega, stellar_damage)
+            simulate(gs, constants.DT_SIM, inp, capture_radius, stranded_omega, damage_mult, dock_speed_limit)
             accumulator -= constants.DT_SIM
 
         briefing_visible = gs.state is State.PARKED and not briefing_dismissed
-        draw(screen, font, title_font, gs, inp.thrust, capture_radius, capture_setting, stellar_damage, briefing_visible)
+        draw(screen, font, title_font, gs, inp.thrust, capture_radius, difficulty, briefing_visible)
         pygame.display.flip()
         await asyncio.sleep(0)
 

@@ -166,12 +166,14 @@ def draw_capture_halo(
 # because there are no competing line strokes. Sized in fractions of
 # STRANDED_ORBIT_RADIUS so the field always stays inside the orbit guide.
 _FLARE_LAYERS: tuple[tuple[float, float, int, float, tuple[int, int, int]], ...] = (
-    # (r_ratio, amp_ratio, lobes, phase_speed, base_rgb) — outer→inner
-    (0.92, 0.040, 9, +0.45, (255, 210, 110)),
-    (0.78, 0.055, 7, -0.55, (255, 170,  80)),
-    (0.62, 0.070, 5, +0.65, (255, 130,  60)),
-    (0.45, 0.080, 4, -0.80, (255,  95,  45)),
-    (0.28, 0.100, 3, +1.00, (255,  60,  40)),
+    # (r_ratio, amp_ratio, lobes, phase_speed, base_rgb) — outer→inner.
+    # All-red gradient: rose-red at the outer edge deepening to bright red
+    # near the star.
+    (0.92, 0.040, 9, +0.45, (255, 110,  90)),
+    (0.78, 0.055, 7, -0.55, (255,  85,  65)),
+    (0.62, 0.070, 5, +0.65, (255,  65,  50)),
+    (0.45, 0.080, 4, -0.80, (255,  50,  40)),
+    (0.28, 0.100, 3, +1.00, (255,  40,  30)),
 )
 
 
@@ -199,7 +201,7 @@ def draw_radiation_zone(
         amp = r_max_screen * a_ratio
         phase = t * speed
         # Each layer breathes: alpha pulses with a slow sine, scaled by intensity.
-        alpha = int((36 + 14 * math.sin(t * 1.7 + lobes * 0.4)) * intensity)
+        alpha = int((26 + 10 * math.sin(t * 1.7 + lobes * 0.4)) * intensity)
         if alpha <= 0:
             continue
         color = (base[0], base[1], base[2], max(0, min(255, alpha)))
