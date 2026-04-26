@@ -9,6 +9,7 @@ from typing import Iterable
 import pygame
 
 import constants
+from geometry import tug_visual_center
 
 
 def draw_triangle(
@@ -96,21 +97,6 @@ def draw_stranded(
     facing: float = constants.STRANDED_FACING,
 ) -> None:
     draw_triangle(surf, constants.STRANDED, pos, facing, constants.STRANDED_SIZE)
-
-
-CARGO_TUG_OFFSET = 12.0
-
-
-def tug_visual_center(
-    craft_pos: tuple[float, float], facing: float, cargo: bool
-) -> tuple[float, float]:
-    """Where the tug triangle will actually be drawn (offset backward when towing cargo)."""
-    if not cargo:
-        return (float(craft_pos[0]), float(craft_pos[1]))
-    return (
-        craft_pos[0] - math.cos(facing) * CARGO_TUG_OFFSET,
-        craft_pos[1] - math.sin(facing) * CARGO_TUG_OFFSET,
-    )
 
 
 def draw_tug(
