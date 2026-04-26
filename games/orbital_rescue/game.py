@@ -1016,9 +1016,22 @@ def draw(
             stranded_facing = 0.0
 
     render.draw_stranded(screen, stranded_draw_pos, cam, facing=stranded_facing)
+    # Halo represents the capture zone — must be centered on the capture-check
+    # origin. During OUTBOUND/HOMEBOUND that's gs.tug_pos (= cargo center when
+    # towing); for animations (DOCKED/RETURNING) and parked states the halo
+    # is decorative so tug_visual_pos is fine.
+    halo_pos = gs.tug_pos if gs.state in (State.OUTBOUND, State.HOMEBOUND) else tug_visual_pos
     if show_halo:
-        render.draw_capture_halo(screen, tug_visual_pos, capture_radius, cam)
+        render.draw_capture_halo(screen, halo_pos, capture_radius, cam)
     render.draw_tug(screen, tug_visual_pos, tug_facing, thrusting=tug_thrust, cargo=False, cam=cam)
+
+    # Dock points: small dots at the centers used by the capture check so the
+    # geometry of "halo encloses point" is visible. Stranded dock point hides
+    # once the vessel is in tow (no longer a docking target).
+    if not gs.has_cargo:
+        render.draw_dock_point(screen, gs.stranded_pos, cam)
+    if gs.state is not State.WON:
+        render.draw_dock_point(screen, rescue_pos, cam)
 
     screen.set_clip(None)
 

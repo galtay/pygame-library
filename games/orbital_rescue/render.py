@@ -159,6 +159,17 @@ def draw_capture_halo(
     pygame.draw.circle(surf, constants.HALO, (int(sx), int(sy)), int(cam.s(radius)), 1)
 
 
+def draw_dock_point(
+    surf: pygame.Surface, pos: tuple[float, float], cam: Camera
+) -> None:
+    """Small marker at a ship's docking point — the geometric center against
+    which the tug's capture halo is tested. Capture fires when the halo
+    encloses this point. Constant screen-pixel size so it stays visible at
+    any zoom."""
+    sx, sy = cam.to_screen(pos)
+    pygame.draw.circle(surf, constants.HUD_ACTION, (int(sx), int(sy)), 3)
+
+
 # Translucent filled wavy disks layered to form the solar flare field. Each
 # disk has a sinusoidally modulated radius and slowly rotates via phase.
 # Layered over each other on alpha surfaces, overlap regions composite
