@@ -8,8 +8,8 @@
   below a danger radius. Failure if either vessel's dose maxes out. HUD
   needs a dose meter. Ties into the mission-briefing framing.
 
-- **Relative-velocity docking failure threshold.** Live impact-speed
-  (`delta-v stranded` / `delta-v rescue`) already tracked in the HUD
+- **Relative-velocity docking failure threshold.** Live relative speed
+  (`relative-v stranded` / `relative-v rescue`) already tracked in the HUD
   and locked at each capture. Still pending: above a threshold, the
   dock fails catastrophically (explosion / FAILED state) instead of
   succeeding. Natural second difficulty lever alongside capture radius.
