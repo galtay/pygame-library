@@ -30,9 +30,8 @@ import pygame
 
 import constants
 from geometry import tug_visual_center
+from levels import LEVELS, LEVEL_KEYS
 from physics import (
-    circular_orbit_angular_speed,
-    circular_orbit_position,
     circular_orbit_velocity,
     step,
 )
@@ -57,16 +56,22 @@ class InputFrame:
     thrust: bool
 
 
-def tug_launch_orbit() -> tuple[tuple[float, float], tuple[float, float], float]:
+def tug_launch_orbit(
+    retrograde: bool = False,
+) -> tuple[tuple[float, float], tuple[float, float], float]:
     """Position, velocity, and facing of the tug on the rescue ship's circular orbit.
 
     Facing matches the orientation the tug had while nested inside the rescue
     ship — pointing outward from the star — so launching produces no snap.
+    `retrograde=True` flips the circular velocity vector for levels where the
+    tug starts orbiting against the stranded ship's motion.
     """
     pos = (float(constants.RESCUE_POS[0]), float(constants.RESCUE_POS[1]))
-    vel = circular_orbit_velocity(constants.RESCUE_ORBIT_RADIUS, 0.0)
+    vx, vy = circular_orbit_velocity(constants.RESCUE_ORBIT_RADIUS, 0.0)
+    if retrograde:
+        vx, vy = -vx, -vy
     facing = math.atan2(constants.RESCUE_POS[1] - constants.STAR_POS[1], constants.RESCUE_POS[0] - constants.STAR_POS[0])
-    return pos, vel, facing
+    return pos, (vx, vy), facing
 
 
 BRIEFING_TITLE = "MISSION BRIEFING"
@@ -129,15 +134,23 @@ class GameState:
     tug_vel: tuple[float, float]
     tug_angle: float
     tug_trail: deque[tuple[float, float]]
-    stranded_angle: float
+    # Stranded ship's orbit phase as mean anomaly M (radians). Position and
+    # velocity are derived from M via the level's Orbit each tick.
+    stranded_anomaly: float
     stranded_pos: tuple[float, float]
+    # Active level — picks the stranded ship's orbit from LEVELS.
+    level: int
     arrival_progress: float
     # Shared timer for the two game-driven animations: the DOCKED rotate-to-
     # prograde and the RETURNING glide-into-rescue. They never overlap.
     phase_anim_elapsed: float
     dock_tug_start_facing: float
-    dock_tug_capture_radius: float
-    dock_tug_capture_angle: float
+    # Tug's position at capture, expressed as an offset from the stranded
+    # ship's cargo-mount point at that instant. The DOCKED animation rides
+    # along the live stranded orbit and decays this offset to (0, 0) over
+    # PHASE_ANIM_DURATION — works for any orbit shape (circular, elliptical,
+    # lemniscate, …) and any number of gravity sources.
+    dock_tug_offset_at_capture: tuple[float, float]
     dock_tug_start_pos: tuple[float, float]
     dock_stranded_start_pos: tuple[float, float]
     rv_stranded_at_lock: float
@@ -161,31 +174,32 @@ class GameState:
     status: str
 
     @classmethod
-    def new(cls, *, with_arrival: bool = False) -> "GameState":
-        """Fresh game: tug parked on the rescue ship, stranded ship at the
-        fixed start angle (opposite the rescue ship) so per-mission timing
-        and score comparisons are meaningful.
+    def new(cls, *, level: int = 1, with_arrival: bool = False) -> "GameState":
+        """Fresh game on `level`: tug parked on the rescue ship, stranded
+        ship placed at the level's fixed start phase. Start phase is the
+        same across levels so timing/score comparisons are meaningful.
 
         `with_arrival=True` runs the intro animation; reset (R) uses the
         default so the player jumps straight to the settled state.
         """
-        pos, _vel, facing = tug_launch_orbit()
-        stranded_angle = constants.STRANDED_START_ANGLE
+        level_def = LEVELS[level]
+        pos, _vel, facing = tug_launch_orbit(retrograde=level_def.tug_retrograde)
+        stranded_anomaly = level_def.start_mean_anomaly
         return cls(
             state=State.ARRIVING if with_arrival else State.PARKED,
             tug_pos=pos,
             tug_vel=(0.0, 0.0),
             tug_angle=facing,
             tug_trail=deque(maxlen=constants.MAX_TRAIL_POINTS),
-            stranded_angle=stranded_angle,
-            stranded_pos=circular_orbit_position(
-                constants.STAR_POS, constants.STRANDED_ORBIT_RADIUS, stranded_angle
+            stranded_anomaly=stranded_anomaly,
+            stranded_pos=level_def.stranded_orbit.position(
+                stranded_anomaly, constants.STAR_POS
             ),
+            level=level,
             arrival_progress=0.0 if with_arrival else 1.0,
             phase_anim_elapsed=0.0,
             dock_tug_start_facing=0.0,
-            dock_tug_capture_radius=0.0,
-            dock_tug_capture_angle=0.0,
+            dock_tug_offset_at_capture=(0.0, 0.0),
             dock_tug_start_pos=(0.0, 0.0),
             dock_stranded_start_pos=(0.0, 0.0),
             rv_stranded_at_lock=0.0,
@@ -209,7 +223,9 @@ class GameState:
         self.status = "SPACE to launch the tug."
 
     def launch_outbound(self) -> None:
-        pos, vel, facing = tug_launch_orbit()
+        pos, vel, facing = tug_launch_orbit(
+            retrograde=LEVELS[self.level].tug_retrograde
+        )
         self.tug_pos = pos
         self.tug_vel = vel
         self.tug_angle = facing
@@ -223,7 +239,7 @@ class GameState:
         self.status = "Pilot the tug to the stranded ship."
 
     def engage_homebound(self) -> None:
-        vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, self.stranded_angle)
+        vel = LEVELS[self.level].stranded_orbit.velocity(self.stranded_anomaly)
         self.tug_pos = self.stranded_pos
         self.tug_vel = vel
         # Preserve the post-alignment orientation so HOMEBOUND starts with no snap.
@@ -239,7 +255,6 @@ def simulate(
     dt: float,
     inp: InputFrame,
     capture_radius: float,
-    stranded_omega: float,
     damage_mult: float,
     dock_speed_limit: float,
 ) -> None:
@@ -248,13 +263,13 @@ def simulate(
         gs.mission_elapsed += dt
     _update_view_zoom(gs, dt)
     if gs.state is State.ARRIVING:
-        _tick_arriving(gs, dt, stranded_omega)
+        _tick_arriving(gs, dt)
     elif gs.state is State.PARKED:
-        _advance_stranded(gs, dt, stranded_omega)
+        _advance_stranded(gs, dt)
     elif gs.state is State.OUTBOUND:
-        _tick_outbound(gs, dt, inp, capture_radius, stranded_omega, damage_mult, dock_speed_limit)
+        _tick_outbound(gs, dt, inp, capture_radius, damage_mult, dock_speed_limit)
     elif gs.state is State.DOCKED:
-        _tick_docked(gs, dt, stranded_omega, damage_mult)
+        _tick_docked(gs, dt, damage_mult)
     elif gs.state is State.HOMEBOUND:
         _tick_homebound(gs, dt, inp, capture_radius, damage_mult, dock_speed_limit)
     elif gs.state is State.RETURNING:
@@ -262,8 +277,8 @@ def simulate(
     # WON, FAILED — no-op
 
 
-def _tick_arriving(gs: GameState, dt: float, stranded_omega: float) -> None:
-    _advance_stranded(gs, dt, stranded_omega)
+def _tick_arriving(gs: GameState, dt: float) -> None:
+    _advance_stranded(gs, dt)
     gs.arrival_progress += dt / constants.ARRIVAL_DURATION
     if gs.arrival_progress >= 1.0:
         gs.finish_arrival()
@@ -274,11 +289,10 @@ def _tick_outbound(
     dt: float,
     inp: InputFrame,
     capture_radius: float,
-    stranded_omega: float,
     damage_mult: float,
     dock_speed_limit: float,
 ) -> None:
-    _advance_stranded(gs, dt, stranded_omega)
+    _advance_stranded(gs, dt)
     _apply_pilot_input(gs, dt, inp)
     if _hit_star(gs):
         _fail(gs, "Crashed the tug into the star.")
@@ -298,9 +312,9 @@ def _tick_outbound(
 
 
 def _tick_docked(
-    gs: GameState, dt: float, stranded_omega: float, damage_mult: float
+    gs: GameState, dt: float, damage_mult: float
 ) -> None:
-    _advance_stranded(gs, dt, stranded_omega)
+    _advance_stranded(gs, dt)
     gs.phase_anim_elapsed += dt
     if _flares_active(gs):
         tug_maxed, stranded_maxed = _accumulate_damage(gs, dt, damage_mult)
@@ -362,27 +376,40 @@ def _apply_pilot_input(gs: GameState, dt: float, inp: InputFrame) -> None:
         gs.fuel = max(0.0, gs.fuel - constants.FUEL_BURN_RATE * dt)
     else:
         thrust = (0.0, 0.0)
-    gs.tug_pos, gs.tug_vel = step(gs.tug_pos, gs.tug_vel, constants.STAR_POS, dt, thrust)
+    sources = LEVELS[gs.level].stars
+    gs.tug_pos, gs.tug_vel = step(gs.tug_pos, gs.tug_vel, sources, dt, thrust)
     gs.tug_trail.append(gs.tug_pos)
 
 
 def _hit_star(gs: GameState) -> bool:
-    pdx = gs.tug_pos[0] - constants.STAR_POS[0]
-    pdy = gs.tug_pos[1] - constants.STAR_POS[1]
-    return pdx * pdx + pdy * pdy <= constants.STAR_RADIUS * constants.STAR_RADIUS
+    """True iff the tug overlaps any star core in the active level."""
+    r2 = constants.STAR_RADIUS * constants.STAR_RADIUS
+    for (sx, sy), _mu in LEVELS[gs.level].stars:
+        dx = gs.tug_pos[0] - sx
+        dy = gs.tug_pos[1] - sy
+        if dx * dx + dy * dy <= r2:
+            return True
+    return False
 
 
 def _flares_active(gs: GameState) -> bool:
-    """True iff stellar flares are currently active (post-instability-delay)."""
-    return gs.mission_elapsed >= constants.INSTABILITY_DELAY
+    """True iff stellar flares are currently active (post-instability-delay)
+    on a level that uses flares."""
+    return (
+        LEVELS[gs.level].flares
+        and gs.mission_elapsed >= constants.INSTABILITY_DELAY
+    )
 
 
-def _flare_intensity(gs: GameState) -> float:
-    """0.0 before flares fire; ramps to 1.0 over INSTABILITY_FADE after.
-    Drives only the visual — damage is binary on/off."""
-    if gs.mission_elapsed < constants.INSTABILITY_DELAY:
+def _flare_growth(gs: GameState) -> float:
+    """0.0 at launch, 1.0 once the instability countdown reaches 0. Drives
+    the staggered buildup of flare layers in the renderer — inner rings
+    appear first, outer last, so the danger zone has fully formed by the
+    moment damage begins. Damage itself remains binary on/off. Stays at 0
+    on levels with `flares=False` so the radiation zone is never drawn."""
+    if not LEVELS[gs.level].flares:
         return 0.0
-    return min(1.0, (gs.mission_elapsed - constants.INSTABILITY_DELAY) / constants.INSTABILITY_FADE)
+    return min(1.0, gs.mission_elapsed / constants.INSTABILITY_DELAY)
 
 
 def _accumulate_damage(gs: GameState, dt: float, damage_mult: float) -> tuple[bool, bool]:
@@ -454,7 +481,7 @@ def _captured_stranded(
     dy = gs.tug_pos[1] - gs.stranded_pos[1]
     if dx * dx + dy * dy > capture_radius * capture_radius:
         return False
-    stranded_vel = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
+    stranded_vel = LEVELS[gs.level].stranded_orbit.velocity(gs.stranded_anomaly)
     impact = _relative_speed(gs.tug_vel, stranded_vel)
     gs.rv_stranded_at_lock = impact
     if impact > dock_speed_limit:
@@ -464,10 +491,17 @@ def _captured_stranded(
     gs.status = "Docked!"
     gs.phase_anim_elapsed = 0.0
     gs.dock_tug_start_facing = gs.tug_angle
-    tug_dx = gs.tug_pos[0] - constants.STAR_POS[0]
-    tug_dy = gs.tug_pos[1] - constants.STAR_POS[1]
-    gs.dock_tug_capture_radius = math.hypot(tug_dx, tug_dy)
-    gs.dock_tug_capture_angle = math.atan2(tug_dy, tug_dx)
+    # Snapshot the tug's offset from the stranded ship's cargo-mount point
+    # at this instant; the DOCKED animation rides the live stranded orbit
+    # and decays this offset to zero. Avoids the bouncing that came from
+    # lerping toward an imagined circular orbit around STAR_POS while the
+    # stranded ship moved along its real (possibly elliptical or
+    # lemniscate) path.
+    target = tug_visual_center(gs.stranded_pos, constants.STRANDED_FACING, cargo=True)
+    gs.dock_tug_offset_at_capture = (
+        gs.tug_pos[0] - target[0],
+        gs.tug_pos[1] - target[1],
+    )
     gs.has_cargo = True
     return True
 
@@ -498,23 +532,28 @@ def _captured_rescue(
     return True
 
 
-def _advance_stranded(gs: GameState, dt: float, omega: float) -> None:
-    gs.stranded_angle = (gs.stranded_angle + omega * dt) % (2 * math.pi)
-    gs.stranded_pos = circular_orbit_position(
-        constants.STAR_POS, constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle
-    )
+def _advance_stranded(gs: GameState, dt: float) -> None:
+    orbit = LEVELS[gs.level].stranded_orbit
+    gs.stranded_anomaly = orbit.advance(gs.stranded_anomaly, dt)
+    gs.stranded_pos = orbit.position(gs.stranded_anomaly, constants.STAR_POS)
 
 
 def _settings_lines(
+    level: int,
     difficulty: str,
 ) -> list[list[tuple[str, tuple[int, int, int]]]]:
-    """Settings readout: cyclable [d]ifficulty plus the three derived values."""
+    """Settings readout: level + cyclable [d]ifficulty plus its three derived values."""
     preset = constants.DIFFICULTY_PRESETS[difficulty]
     capture = str(preset["capture"])
     rv_setting = str(preset["rv_max"])
     rv_limit = constants.DOCK_SPEED_LIMITS[rv_setting]
     damage_mult = float(preset["damage_mult"])
+    level_keys_label = "/".join(str(k) for k in LEVEL_KEYS)
     return [
+        [
+            (f"[{level_keys_label}]", constants.HUD_ACTION),
+            (f" level: {level} ({LEVELS[level].name})", constants.HUD),
+        ],
         [("[d]", constants.HUD_ACTION), (f"ifficulty: {difficulty}", constants.HUD)],
         [("  capture radius: ", constants.HUD), (capture, constants.HUD_ACTION)],
         [("  rv max: ", constants.HUD), (f"{rv_limit:.0f} px/s", constants.HUD_ACTION)],
@@ -698,7 +737,7 @@ def _draw_telemetry_section(
     if gs.has_cargo:
         rv_s, rv_s_color = gs.rv_stranded_at_lock, constants.HUD_ACTION
     else:
-        sv = circular_orbit_velocity(constants.STRANDED_ORBIT_RADIUS, gs.stranded_angle)
+        sv = LEVELS[gs.level].stranded_orbit.velocity(gs.stranded_anomaly)
         rv_s = _relative_speed(gs.tug_vel, sv)
         rv_s_color = constants.HUD
     _draw_kv(
@@ -744,9 +783,12 @@ def _draw_telemetry_section(
     )
     y += line_h
 
-    # Star state: countdown to instability, then FLARES once it triggers.
+    # Star state: dash on flare-disabled levels; otherwise countdown,
+    # then FLARES once it triggers.
     in_mission = gs.state in (State.OUTBOUND, State.DOCKED, State.HOMEBOUND, State.RETURNING)
-    if in_mission and gs.mission_elapsed < constants.INSTABILITY_DELAY:
+    if not LEVELS[gs.level].flares:
+        val_text, val_color = "—", constants.HUD
+    elif in_mission and gs.mission_elapsed < constants.INSTABILITY_DELAY:
         countdown = constants.INSTABILITY_DELAY - gs.mission_elapsed
         val_text, val_color = f"T-{countdown:4.1f}s", constants.HUD_ACTION
     elif _flares_active(gs):
@@ -830,15 +872,52 @@ def _draw_settings_section(
     screen: pygame.Surface,
     rect: pygame.Rect,
     font: pygame.font.Font,
+    level: int,
     difficulty: str,
 ) -> None:
     _draw_section_frame(screen, rect, font, "SETTINGS", constants.PANEL_HEADER)
     x, y, _w = _box_inner(rect)
     line_h = font.get_height() + 2
-    for segs in _settings_lines(difficulty):
+    for segs in _settings_lines(level, difficulty):
         s = render.render_key_line(font, segs)
         screen.blit(s, (x, y))
         y += line_h
+
+
+def _draw_records_section(
+    screen: pygame.Surface,
+    rect: pygame.Rect,
+    font: pygame.font.Font,
+    records: dict[tuple[int, str], float],
+    active_level: int,
+    active_difficulty: str,
+) -> None:
+    """Best mission time per difficulty for the active level. The active
+    difficulty cell is colored HUD_ACTION; unrecorded cells show dashes."""
+    _draw_section_frame(screen, rect, font, "RECORDS", constants.PANEL_HEADER)
+    x, y, w = _box_inner(rect)
+
+    # Three evenly-spaced cells, one per difficulty. Each cell renders as
+    # "d<n> <time>" with the label dimmer than the value so the eye lands
+    # on the times.
+    n_diff = len(constants.DIFFICULTY_CYCLE)
+    cell_w = w // n_diff
+    for i, d in enumerate(constants.DIFFICULTY_CYCLE):
+        best = records.get((active_level, d))
+        is_active = d == active_difficulty
+        if best is None:
+            time_text, time_color = "--", constants.HUD
+        else:
+            time_text = _format_mission_time(best)
+            time_color = constants.HUD_ACTION if is_active else constants.HUD_OK
+        label_color = constants.HUD_ACTION if is_active else constants.PANEL_HEADER
+        segs: list[tuple[str, tuple[int, int, int]]] = [
+            (f"d{d} ", label_color),
+            (time_text, time_color),
+        ]
+        line = render.render_key_line(font, segs)
+        cell_x = x + i * cell_w + (cell_w - line.get_width()) // 2
+        screen.blit(line, (cell_x, y))
 
 
 def _draw_controls_section(
@@ -873,6 +952,7 @@ def _draw_side_panel(
     gs: GameState,
     difficulty: str,
     briefing_visible: bool,
+    records: dict[tuple[int, str], float],
 ) -> None:
     panel_w = constants.SIDE_PANEL_WIDTH
     panel_h = constants.WINDOW_SIZE[1]
@@ -892,15 +972,17 @@ def _draw_side_panel(
 
     # Telemetry: 7 content lines (time, two rv, three meters, star) + 8 px
     # spacer between the numerical readouts and the meter bars. Settings
-    # has 4 lines (difficulty + three derived readouts).
+    # has 5 lines (level + difficulty + three derived readouts). Records
+    # has 1 line — three difficulty cells for the active level.
     telemetry_h = box_overhead + line_h * 7 + 8
-    settings_h = box_overhead + line_h * 4
+    settings_h = box_overhead + line_h * 5
     controls_h = box_overhead + line_h * 2
+    records_h = box_overhead + line_h * 1
     section_gap = 16
 
     # Mission box fills the slack at the top so the briefing/report has plenty
     # of room and the lower sections are fixed-position.
-    fixed_total = telemetry_h + settings_h + controls_h + 3 * section_gap
+    fixed_total = telemetry_h + settings_h + controls_h + records_h + 4 * section_gap
     mission_h = panel_h - 2 * pad - fixed_total
 
     y = pad
@@ -913,11 +995,15 @@ def _draw_side_panel(
     y += telemetry_h + section_gap
 
     settings_rect = pygame.Rect(x, y, inner_w, settings_h)
-    _draw_settings_section(screen, settings_rect, font, difficulty)
+    _draw_settings_section(screen, settings_rect, font, gs.level, difficulty)
     y += settings_h + section_gap
 
     controls_rect = pygame.Rect(x, y, inner_w, controls_h)
     _draw_controls_section(screen, controls_rect, font)
+    y += controls_h + section_gap
+
+    records_rect = pygame.Rect(x, y, inner_w, records_h)
+    _draw_records_section(screen, records_rect, font, records, gs.level, difficulty)
 
 
 def draw(
@@ -929,17 +1015,19 @@ def draw(
     capture_radius: float,
     difficulty: str,
     briefing_visible: bool,
+    records: dict[tuple[int, str], float],
 ) -> None:
     cam = render.Camera(gs.view_zoom)
     # Clip world rendering to the gameplay viewport so anything that runs
     # off-screen (orbit guides, lost-radius ring, ships at low zoom) stays
     # out of the side panel.
     screen.set_clip(pygame.Rect(*constants.VIEWPORT_RECT))
-    render.draw_background(screen, cam)
-    intensity = _flare_intensity(gs)
-    if intensity > 0.0:
+    level_def = LEVELS[gs.level]
+    render.draw_background(screen, cam, level_def.stranded_orbit, level_def.stars)
+    growth = _flare_growth(gs)
+    if growth > 0.0:
         t_wall = pygame.time.get_ticks() / 1000.0
-        render.draw_radiation_zone(screen, cam, t_wall, intensity)
+        render.draw_radiation_zone(screen, cam, t_wall, growth)
     render.draw_trail(screen, gs.tug_trail, cam)
     rescue_pos = rescue_ship_position(gs.arrival_progress)
     render.draw_rescue_ship(screen, rescue_pos, cam)
@@ -960,24 +1048,21 @@ def draw(
         tug_visual_pos = rescue_pos
         tug_thrust = False
     elif gs.state is State.DOCKED:
-        # Game takes control. The tug is treated as if it slipped into a
-        # circular orbit at its capture radius, and we lerp from that
-        # orbital motion to the stranded vessel's docked offset.
+        # Game takes control. The tug rides along the live stranded orbit
+        # (which `_advance_stranded` is updating each tick), and the
+        # offset captured at dock smoothly decays to zero — so by the end
+        # of the animation the tug sits exactly on the stranded ship's
+        # cargo mount, regardless of orbit shape or gravity field.
         elapsed = gs.phase_anim_elapsed
-        omega = circular_orbit_angular_speed(gs.dock_tug_capture_radius)
-        tug_orbit_angle = gs.dock_tug_capture_angle + omega * elapsed
-        tug_orbit_pos = (
-            constants.STAR_POS[0] + gs.dock_tug_capture_radius * math.cos(tug_orbit_angle),
-            constants.STAR_POS[1] + gs.dock_tug_capture_radius * math.sin(tug_orbit_angle),
-        )
         target_pos = tug_visual_center(gs.stranded_pos, constants.STRANDED_FACING, cargo=True)
         t_raw = min(1.0, elapsed / constants.PHASE_ANIM_DURATION)
         t = t_raw * t_raw * (3 - 2 * t_raw)
-        tug_facing = _lerp_angle(gs.dock_tug_start_facing, constants.STRANDED_FACING, t)
+        ox, oy = gs.dock_tug_offset_at_capture
         tug_visual_pos = (
-            tug_orbit_pos[0] * (1 - t) + target_pos[0] * t,
-            tug_orbit_pos[1] * (1 - t) + target_pos[1] * t,
+            target_pos[0] + ox * (1 - t),
+            target_pos[1] + oy * (1 - t),
         )
+        tug_facing = _lerp_angle(gs.dock_tug_start_facing, constants.STRANDED_FACING, t)
         tug_thrust = False
         if t_raw < 1.0:
             show_halo = int(elapsed / 0.2) % 2 == 0
@@ -1035,7 +1120,13 @@ def draw(
 
     screen.set_clip(None)
 
-    _draw_side_panel(screen, font, title_font, gs, difficulty, briefing_visible)
+    _draw_side_panel(screen, font, title_font, gs, difficulty, briefing_visible, records)
+
+
+# Number-key bindings for fast level switching. K_1 → level 1, K_2 → level 2, …
+_LEVEL_KEY_MAP: dict[int, int] = {
+    getattr(pygame, f"K_{n}"): n for n in LEVEL_KEYS
+}
 
 
 async def run() -> None:
@@ -1047,10 +1138,16 @@ async def run() -> None:
     font = pygame.font.Font(font_path, 14)
     title_font = pygame.font.Font(font_path, 22)
 
-    stranded_omega = circular_orbit_angular_speed(constants.STRANDED_ORBIT_RADIUS)
+    level = 1
     difficulty = "1"
     briefing_dismissed = False
-    gs = GameState.new(with_arrival=True)
+    gs = GameState.new(level=level, with_arrival=True)
+    # Per-(level, difficulty) best mission times. In-memory only — records
+    # reset on process exit / page refresh.
+    records: dict[tuple[int, str], float] = {}
+    # Tracks whether the latest WON state has already been written to records.
+    # Set False on every reset / level switch.
+    win_recorded = False
     accumulator = 0.0
 
     running = True
@@ -1070,12 +1167,19 @@ async def run() -> None:
                     # intentionally not surfaced in the controls block —
                     # it's a debugging convenience.
                     hard = bool(event.mod & pygame.KMOD_SHIFT)
-                    gs = GameState.new(with_arrival=hard)
+                    gs = GameState.new(level=level, with_arrival=hard)
                     briefing_dismissed = not hard
+                    win_recorded = False
                     accumulator = 0.0
                 elif event.key == pygame.K_d:
                     i = constants.DIFFICULTY_CYCLE.index(difficulty)
                     difficulty = constants.DIFFICULTY_CYCLE[(i + 1) % len(constants.DIFFICULTY_CYCLE)]
+                elif event.key in _LEVEL_KEY_MAP:
+                    level = _LEVEL_KEY_MAP[event.key]
+                    gs = GameState.new(level=level, with_arrival=False)
+                    briefing_dismissed = True
+                    win_recorded = False
+                    accumulator = 0.0
                 elif event.key == pygame.K_SPACE:
                     if gs.state is State.ARRIVING:
                         gs.finish_arrival()
@@ -1101,11 +1205,18 @@ async def run() -> None:
         damage_mult = float(preset["damage_mult"])
 
         while accumulator >= constants.DT_SIM:
-            simulate(gs, constants.DT_SIM, inp, capture_radius, stranded_omega, damage_mult, dock_speed_limit)
+            simulate(gs, constants.DT_SIM, inp, capture_radius, damage_mult, dock_speed_limit)
             accumulator -= constants.DT_SIM
 
+        if not win_recorded and gs.state is State.WON:
+            key = (level, difficulty)
+            prev = records.get(key)
+            if prev is None or gs.mission_elapsed < prev:
+                records[key] = gs.mission_elapsed
+            win_recorded = True
+
         briefing_visible = gs.state is State.PARKED and not briefing_dismissed
-        draw(screen, font, title_font, gs, inp.thrust, capture_radius, difficulty, briefing_visible)
+        draw(screen, font, title_font, gs, inp.thrust, capture_radius, difficulty, briefing_visible, records)
         pygame.display.flip()
         await asyncio.sleep(0)
 

@@ -122,13 +122,13 @@ FUEL_BURN_RATE = 8.0                   # units per second of thrust
 
 # Solar flare damage. The star is unstable; once it flares, solar energy
 # saturates the inner zone. Flares fire INSTABILITY_DELAY seconds after
-# launch and ramp in visually over INSTABILITY_FADE. DAMAGE_DANGER_RADIUS
-# sits slightly outside STRANDED_ORBIT_RADIUS so the stranded vessel at
-# r=220 is consistently inside the zone. The hardened tug takes damage
-# at the same radii but at a much lower rate.
+# launch; the visual zone builds up over that same countdown (inner rings
+# first, outer last) so the field is fully formed when damage begins.
+# DAMAGE_DANGER_RADIUS sits slightly outside STRANDED_ORBIT_RADIUS so the
+# stranded vessel at r=220 is consistently inside the zone. The hardened
+# tug takes damage at the same radii but at a much lower rate.
 DAMAGE_CAPACITY = 100.0
 TUG_DAMAGE_RATE = 0.5                  # %/s — hardened, takes damage slowly
 STRANDED_DAMAGE_RATE = 1.5             # %/s — unshielded vessel
 DAMAGE_DANGER_RADIUS = 230.0
 INSTABILITY_DELAY = 10.0               # seconds after launch before flares fire
-INSTABILITY_FADE = 1.5                 # seconds for the visual to ramp in

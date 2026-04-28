@@ -1,22 +1,15 @@
 # TODO — Orbital Rescue
 
-## Gameplay
+## Achievements
 
-- **Stellar radiation damage mechanic.** When stellar damage is ON:
-  stranded ship accumulates radiation dose continuously (it's in a low,
-  hot orbit); the hardened tug accumulates dose only when its path dips
-  below a danger radius. Failure if either vessel's dose maxes out. HUD
-  needs a dose meter. Ties into the mission-briefing framing.
+Creative single-run feats awarded on top of the per-(level, difficulty)
+best-time records. In-memory only for now; persistence is a follow-up.
+Side-panel display TBD.
 
-- **Relative-velocity docking failure threshold.** Live relative speed
-  (`relative-v stranded` / `relative-v rescue`) already tracked in the HUD
-  and locked at each capture. Still pending: above a threshold, the
-  dock fails catastrophically (explosion / FAILED state) instead of
-  succeeding. Natural second difficulty lever alongside capture radius.
-
-## Audio
-
-- **Basic 8-bit music.** Chiptune background track for ambience,
-  ideally with phase-aware variation (arrival / outbound / docking /
-  homebound / win / fail). Sound effects too: thrust, capture lock,
-  dock chime, crash, rescue-complete fanfare.
+- **Ballistic Rescue** *(level 2 — elliptical)* — Dock with the stranded
+  ship without ever firing thrusters. Time the SPACE launch so the tug's
+  circular launch orbit (r ≈ 320) and the stranded ellipse (apoapsis
+  ≈ 297) meet naturally at the right phase. Will need per-difficulty
+  tuning — at d1 the large capture radius covers the ~23 px gap at
+  closest approach, but d2/d3 likely need a tweak to level 2's ellipse
+  (e.g. bump apoapsis past 320) for the achievement to be reachable.

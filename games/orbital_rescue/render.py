@@ -9,8 +9,11 @@ from typing import Iterable
 
 import pygame
 
+from typing import Sequence
+
 import constants
 from geometry import tug_visual_center
+from physics import GravitySource, Orbit
 
 
 @dataclass(frozen=True)
@@ -54,22 +57,36 @@ def draw_triangle(
     pygame.draw.polygon(surf, color, [tip, left, right], width)
 
 
-def draw_background(surf: pygame.Surface, cam: Camera, dim_star: bool = False) -> None:
+def draw_background(
+    surf: pygame.Surface,
+    cam: Camera,
+    stranded_orbit: Orbit,
+    stars: Sequence[GravitySource],
+    dim_star: bool = False,
+) -> None:
     surf.fill(constants.BG)
-    star_screen = cam.to_screen(constants.STAR_POS)
-    pygame.draw.circle(surf, constants.ORBIT_GUIDE, star_screen, cam.s(constants.STRANDED_ORBIT_RADIUS), 1)
-    pygame.draw.circle(surf, constants.ORBIT_GUIDE, star_screen, cam.s(constants.RESCUE_ORBIT_RADIUS), 1)
+    midpoint_screen = cam.to_screen(constants.STAR_POS)
+    # Stranded orbit guide: traced as a sampled polyline so elliptical and
+    # figure-eight levels render correctly. Circular case reduces to a
+    # regular N-gon — visually indistinguishable from pygame.draw.circle.
+    # Centered on STAR_POS, which is also the midpoint of multi-star levels.
+    path = [
+        cam.to_screen(p) for p in stranded_orbit.sample_path(constants.STAR_POS, n=128)
+    ]
+    pygame.draw.aalines(surf, constants.ORBIT_GUIDE, True, path)
+    pygame.draw.circle(surf, constants.ORBIT_GUIDE, midpoint_screen, cam.s(constants.RESCUE_ORBIT_RADIUS), 1)
     # Lost-in-space boundary: three concentric red rings (faint outer halo,
-    # mid glow, bright core) for a glowing-edge effect. Ring offsets are in
+    # mid glow, bright core) for a glowing-edge effect. Centered on the
+    # midpoint of the system regardless of star count. Ring offsets are in
     # screen pixels so the glow stays visible at every zoom.
     lost_r = int(cam.s(constants.LOST_RADIUS))
     if lost_r > 0:
-        pygame.draw.circle(surf, constants.LOST_BOUNDARY_HALO, star_screen, lost_r + 2, 1)
-        pygame.draw.circle(surf, constants.LOST_BOUNDARY_GLOW, star_screen, lost_r + 1, 1)
-        pygame.draw.circle(surf, constants.LOST_BOUNDARY, star_screen, lost_r, 1)
-    # Star: concentric opaque circles from dim outer glow to hot core.
+        pygame.draw.circle(surf, constants.LOST_BOUNDARY_HALO, midpoint_screen, lost_r + 2, 1)
+        pygame.draw.circle(surf, constants.LOST_BOUNDARY_GLOW, midpoint_screen, lost_r + 1, 1)
+        pygame.draw.circle(surf, constants.LOST_BOUNDARY, midpoint_screen, lost_r, 1)
+    # Stars: concentric opaque circles from dim outer glow to hot core.
     # `dim_star` drops each layer to ~33% brightness so mission briefing text
-    # stays legible over the star.
+    # stays legible over the star. All stars use the same shared geometry.
     k = 0.33 if dim_star else 1.0
     layers = (
         (constants.STAR_OUTER, constants.STAR_OUTER_RADIUS),
@@ -77,9 +94,11 @@ def draw_background(surf: pygame.Surface, cam: Camera, dim_star: bool = False) -
         (constants.STAR_CORONA, constants.STAR_CORONA_RADIUS),
         (constants.STAR_CORE, constants.STAR_RADIUS),
     )
-    for color, radius in layers:
-        dim = (int(color[0] * k), int(color[1] * k), int(color[2] * k))
-        pygame.draw.circle(surf, dim, star_screen, cam.s(radius))
+    for star_pos, _mu in stars:
+        screen_pos = cam.to_screen(star_pos)
+        for color, radius in layers:
+            dim = (int(color[0] * k), int(color[1] * k), int(color[2] * k))
+            pygame.draw.circle(surf, dim, screen_pos, cam.s(radius))
 
 
 def draw_trail(
@@ -189,13 +208,15 @@ _FLARE_LAYERS: tuple[tuple[float, float, int, float, tuple[int, int, int]], ...]
 
 
 def draw_radiation_zone(
-    surf: pygame.Surface, cam: Camera, t: float, intensity: float
+    surf: pygame.Surface, cam: Camera, t: float, growth: float
 ) -> None:
     """Animated solar flare field: layered translucent wavy disks centered on
     the star. `t` is wall-clock seconds so waves move regardless of game
-    pause; `intensity` in [0, 1] scales overall opacity for the ramp-in.
+    pause; `growth` in [0, 1] runs from launch to the moment the instability
+    countdown hits 0. Layers fade in staggered along `growth` — innermost
+    first, outermost last — so the zone has fully formed by countdown=0.
     """
-    if intensity <= 0.0:
+    if growth <= 0.0:
         return
     cx, cy = cam.to_screen(constants.STAR_POS)
     r_max_screen = cam.s(constants.DAMAGE_DANGER_RADIUS)
@@ -207,12 +228,22 @@ def draw_radiation_zone(
     ocy = diameter // 2
 
     n_pts = 96
-    for r_ratio, a_ratio, lobes, speed, base in _FLARE_LAYERS:
+    n_layers = len(_FLARE_LAYERS)
+    # Each layer fades in over `window` of the [0,1] growth range. Innermost
+    # starts at growth=0; outermost ends at growth=1. Adjacent layers overlap
+    # so the cascade reads as a smooth grow-out, not five discrete pops.
+    window = 2.0 / n_layers
+    spacing = (1.0 - window) / max(1, n_layers - 1)
+    for idx, (r_ratio, a_ratio, lobes, speed, base) in enumerate(_FLARE_LAYERS):
+        # _FLARE_LAYERS is outer→inner; flip to inner-first for fade order.
+        start_g = spacing * (n_layers - 1 - idx)
+        layer_g = max(0.0, min(1.0, (growth - start_g) / window))
+        if layer_g <= 0.0:
+            continue
         r_base = r_max_screen * r_ratio
         amp = r_max_screen * a_ratio
         phase = t * speed
-        # Each layer breathes: alpha pulses with a slow sine, scaled by intensity.
-        alpha = int((26 + 10 * math.sin(t * 1.7 + lobes * 0.4)) * intensity)
+        alpha = int((26 + 10 * math.sin(t * 1.7 + lobes * 0.4)) * layer_g)
         if alpha <= 0:
             continue
         color = (base[0], base[1], base[2], max(0, min(255, alpha)))
