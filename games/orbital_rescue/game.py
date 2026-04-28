@@ -1043,7 +1043,7 @@ async def run() -> None:
     screen = pygame.display.set_mode(constants.WINDOW_SIZE)
     pygame.display.set_caption("Orbital Rescue")
     clock = pygame.time.Clock()
-    font_path = str(Path(__file__).parent / "Moby-Monospace.ttf")
+    font_path = str(Path(__file__).parent / "MonaspaceNeon-Regular.otf")
     font = pygame.font.Font(font_path, 14)
     title_font = pygame.font.Font(font_path, 22)
 
