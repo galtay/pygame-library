@@ -15,12 +15,13 @@ from dataclasses import dataclass, field
 from typing import Union
 
 import constants
-from physics import MU, GravitySource, Lemniscate, Orbit
+import figure_eight_data
+from physics import MU, GravitySource, Lemniscate, Orbit, TabulatedOrbit
 
-# A path the stranded ship rides — Keplerian orbit or a parametric curve.
-# Both expose position(phase, center), velocity(phase), advance(phase, dt),
-# and sample_path(center, n).
-StrandedPath = Union[Orbit, Lemniscate]
+# A path the stranded ship rides — Keplerian orbit, parametric curve, or
+# precomputed periodic orbit. All expose position(phase, center),
+# velocity(phase), advance(phase, dt), sample_path(center, n).
+StrandedPath = Union[Orbit, Lemniscate, TabulatedOrbit]
 
 
 def _single_star() -> tuple[GravitySource, ...]:
@@ -67,17 +68,21 @@ LEVELS: dict[int, Level] = {
     4: Level(
         name="figure-eight",
         # Two stars at (±110, 0) from STAR_POS, half mass each → combined
-        # far-field strength matches a single MU star. Stars sit near the
-        # lemniscate loop centers so each loop visibly wraps a star and
-        # the crossover passes through the gap between them. Lemniscate
-        # A=200 keeps loop tips inside RESCUE_ORBIT_RADIUS=320 and outside
-        # the star cores. Period 14s feels orbital without being twitchy.
+        # far-field strength matches a single MU star. The stranded ship
+        # rides a real periodic orbit in this two-fixed-center field
+        # (precomputed offline by precompute_figure_eight.py via
+        # differential corrections). Because the orbit is gravitationally
+        # consistent, releasing the tug at any phase keeps it on the same
+        # closed path — same "stable orbit after dock" feel as levels 1–3.
         stars=(
-            ((_STAR_X - 110.0, _STAR_Y), MU * 0.5),
-            ((_STAR_X + 110.0, _STAR_Y), MU * 0.5),
+            ((_STAR_X - figure_eight_data.STAR_OFFSET, _STAR_Y), MU * 0.5),
+            ((_STAR_X + figure_eight_data.STAR_OFFSET, _STAR_Y), MU * 0.5),
         ),
-        stranded_orbit=Lemniscate(semi_major=200.0, period=14.0),
-        start_mean_anomaly=0.0,  # right loop tip
+        stranded_orbit=TabulatedOrbit(
+            samples=figure_eight_data.SAMPLES,
+            period=figure_eight_data.PERIOD,
+        ),
+        start_mean_anomaly=0.0,  # phase 0 = (X0, 0) right loop tip
         flares=False,
     ),
 }

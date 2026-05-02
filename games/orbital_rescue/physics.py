@@ -45,13 +45,45 @@ def step(
     dt: float,
     thrust: tuple[float, float] = (0.0, 0.0),
 ) -> tuple[tuple[float, float], tuple[float, float]]:
-    """Semi-implicit Euler step under summed gravity plus optional thrust."""
-    ax, ay = gravity_accel(pos, sources)
-    vx = vel[0] + (ax + thrust[0]) * dt
-    vy = vel[1] + (ay + thrust[1]) * dt
-    px = pos[0] + vx * dt
-    py = pos[1] + vy * dt
-    return (px, py), (vx, vy)
+    """Classical RK4 step under summed gravity plus optional constant
+    thrust. O(dt⁴) truncation error per step — accurate enough at
+    dt=1/60 that pre-computed periodic orbits in multi-source fields
+    (e.g. the level 4 figure-eight) close to within a fraction of a
+    pixel per period when the same integrator is used to find them."""
+    tx, ty = thrust
+    px, py = pos
+    vx, vy = vel
+
+    # k1
+    a1x, a1y = gravity_accel((px, py), sources)
+    a1x += tx; a1y += ty
+    # k2 — midpoint state under k1
+    px2 = px + 0.5 * dt * vx
+    py2 = py + 0.5 * dt * vy
+    vx2 = vx + 0.5 * dt * a1x
+    vy2 = vy + 0.5 * dt * a1y
+    a2x, a2y = gravity_accel((px2, py2), sources)
+    a2x += tx; a2y += ty
+    # k3 — midpoint state under k2
+    px3 = px + 0.5 * dt * vx2
+    py3 = py + 0.5 * dt * vy2
+    vx3 = vx + 0.5 * dt * a2x
+    vy3 = vy + 0.5 * dt * a2y
+    a3x, a3y = gravity_accel((px3, py3), sources)
+    a3x += tx; a3y += ty
+    # k4 — endpoint state under k3
+    px4 = px + dt * vx3
+    py4 = py + dt * vy3
+    vx4 = vx + dt * a3x
+    vy4 = vy + dt * a3y
+    a4x, a4y = gravity_accel((px4, py4), sources)
+    a4x += tx; a4y += ty
+
+    new_px = px + dt / 6.0 * (vx + 2 * vx2 + 2 * vx3 + vx4)
+    new_py = py + dt / 6.0 * (vy + 2 * vy2 + 2 * vy3 + vy4)
+    new_vx = vx + dt / 6.0 * (a1x + 2 * a2x + 2 * a3x + a4x)
+    new_vy = vy + dt / 6.0 * (a1y + 2 * a2y + 2 * a3y + a4y)
+    return (new_px, new_py), (new_vx, new_vy)
 
 
 def circular_orbit_speed(radius: float) -> float:
@@ -219,3 +251,66 @@ class Lemniscate:
         self, center: tuple[float, float], n: int = 96
     ) -> list[tuple[float, float]]:
         return [self.position(2.0 * math.pi * i / n, center) for i in range(n)]
+
+
+@dataclass(frozen=True)
+class TabulatedOrbit:
+    """Periodic orbit stored as a closed table of (x, y, vx, vy) samples in
+    body-frame coordinates (origin = system center). Phase ∈ [0, 2π) maps
+    linearly to sample index; values between samples come from linear
+    interpolation, with the last sample wrapping back to the first to close
+    the loop. Use this for orbits that have no closed-form expression —
+    e.g., a periodic orbit found by differential corrections in a
+    two-fixed-center gravity field. The table itself is precomputed
+    offline; this class only does cheap interpolation at runtime."""
+
+    samples: tuple[tuple[float, float, float, float], ...]
+    period: float
+
+    def __post_init__(self) -> None:
+        if len(self.samples) < 2:
+            raise ValueError("need at least 2 samples")
+        if self.period <= 0:
+            raise ValueError(f"period must be positive, got {self.period}")
+
+    @property
+    def angular_rate(self) -> float:
+        return 2.0 * math.pi / self.period
+
+    def advance(self, phase: float, dt: float) -> float:
+        return (phase + self.angular_rate * dt) % (2.0 * math.pi)
+
+    def _lookup(self, phase: float) -> tuple[float, float, float, float]:
+        n = len(self.samples)
+        f = (phase % (2.0 * math.pi)) * n / (2.0 * math.pi)
+        i = int(f) % n
+        a = f - int(f)
+        s0 = self.samples[i]
+        s1 = self.samples[(i + 1) % n]
+        return (
+            s0[0] + (s1[0] - s0[0]) * a,
+            s0[1] + (s1[1] - s0[1]) * a,
+            s0[2] + (s1[2] - s0[2]) * a,
+            s0[3] + (s1[3] - s0[3]) * a,
+        )
+
+    def position(
+        self, phase: float, center: tuple[float, float]
+    ) -> tuple[float, float]:
+        x, y, _, _ = self._lookup(phase)
+        return (center[0] + x, center[1] + y)
+
+    def velocity(self, phase: float) -> tuple[float, float]:
+        _, _, vx, vy = self._lookup(phase)
+        return (vx, vy)
+
+    def sample_path(
+        self, center: tuple[float, float], n: int = 96
+    ) -> list[tuple[float, float]]:
+        # If the caller asks for exactly the stored sample count we can
+        # skip interpolation; otherwise re-sample at uniform phases.
+        if n == len(self.samples):
+            return [(center[0] + s[0], center[1] + s[1]) for s in self.samples]
+        return [
+            self.position(2.0 * math.pi * i / n, center) for i in range(n)
+        ]
